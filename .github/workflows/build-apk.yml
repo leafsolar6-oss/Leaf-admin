@@ -11,12 +11,12 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
-      - name: Prepare
+      - name: Prepare standard layout
         run: |
-          mkdir -p app/src/main/res/values app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26
+          mkdir -p app/src/main/java/ng/leafsolar/admin app/src/main/res/values app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26
           cp app-build.gradle app/build.gradle
           cp AndroidManifest.xml app/src/main/
-          cp MainActivity.kt app/src/main/
+          cp MainActivity.kt app/src/main/java/ng/leafsolar/admin/
           cp colors.xml strings.xml themes.xml app/src/main/res/values/
           cp ic_leaf.xml app/src/main/res/drawable/
           cp ic_launcher.xml app/src/main/res/mipmap-anydpi-v26/
