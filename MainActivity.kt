@@ -44,7 +44,8 @@ data class Order(val id: Long, val number: String, val name: String, val phone: 
                 val email: String, val items: List<String>, val total: Double,
                 val status: String, val date: String)
 data class Product(val id: Long, val name: String, val sku: String, val price: Double,
-                   val manageStock: Boolean, val stockQty: Int?, val type: String)
+                   val manageStock: Boolean, val stockQty: Int?, val stockStatus: String,
+                   val type: String)
 
 object Api {
   private val client = OkHttpClient()
@@ -83,13 +84,21 @@ object Api {
         val p = arr.getJSONObject(i)
         all.add(Product(p.getLong("id"), p.getString("name"), p.optString("sku"),
           p.optDouble("price", 0.0), p.optBoolean("manage_stock"),
-          if (p.isNull("stock_quantity")) null else p.optInt("stock_quantity"), p.optString("type", "simple")))
+          if (p.isNull("stock_quantity")) null else p.optInt("stock_quantity"),
+          p.optString("stock_status", "instock"), p.optString("type", "simple")))
       }
       if (arr.length() < 100) break; page++
     }
     all
   }
-  suspend fun setStock(id: Long, q: Int) = withContext(Dispatchers.IO) { exec("products/$id", "PUT", "{\"manage_stock\":true,\"stock_quantity\":$q}") }
+  // qty = null means don't change quantity; manage = null means don't change tracking; status = null means don't change status
+  suspend fun updateProduct(id: Long, qty: Int? = null, manage: Boolean? = null, status: String? = null) = withContext(Dispatchers.IO) {
+    val o = JSONObject()
+    if (manage != null) o.put("manage_stock", manage)
+    if (qty != null) o.put("stock_quantity", qty)
+    if (status != null) o.put("stock_status", status)
+    exec("products/$id", "PUT", o.toString())
+  }
   suspend fun setStatus(id: Long, s: String) = withContext(Dispatchers.IO) { exec("orders/$id", "PUT", "{\"status\":\"$s\"}") }
 }
 
@@ -179,7 +188,14 @@ fun App(act: ComponentActivity) {
         when (tab) {
           0 -> Dashboard(orders, products)
           1 -> Orders(orders) { o, s -> scope.launch { try { Api.setStatus(o.id, s); orders = Api.orders() } catch (_: Exception) {} } }
-          else -> Inventory(act, products) { p, q -> scope.launch { try { Api.setStock(p.id, q); products = Api.products() } catch (_: Exception) {} } }
+          else -> Inventory(act, products, onUpdate = { p, qty, manage, status ->
+            scope.launch {
+              try {
+                Api.updateProduct(p.id, qty, manage, status)
+                products = Api.products()
+              } catch (_: Exception) {}
+            }
+          })
         }
       }
     }
@@ -196,7 +212,7 @@ fun App(act: ComponentActivity) {
   val rev = orders.filter { it.status in listOf("processing", "completed") }.sumOf { it.total }
   val pend = orders.count { it.status == "pending" || it.status == "on-hold" }
   val done = orders.count { it.status == "completed" }
-  val low = products.count { it.manageStock && ((it.stockQty ?: 0) <= 5) }
+  val low = products.count { it.stockStatus == "outofstock" || (it.manageStock && ((it.stockQty ?: 0) <= 5)) }
   val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
   val tod = orders.count { it.date.startsWith(today) }
   Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -252,45 +268,135 @@ fun App(act: ComponentActivity) {
   Surface(color = bg, shape = RoundedCornerShape(999.dp)) { Text(s.uppercase(), color = fg, fontSize = 10.5.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)) }
 }
 
-@Composable fun Inventory(act: ComponentActivity, products: List<Product>, onSave: (Product, Int) -> Unit) {
+@Composable fun Inventory(act: ComponentActivity, products: List<Product>, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
   var q by remember { mutableStateOf("") }
+  var filter by remember { mutableStateOf(0) } // 0=all, 1=out, 2=low
   val ctx = LocalContext.current
-  val shown = remember(products, q) { products.filter { q.isBlank() || it.name.contains(q, true) || it.sku.contains(q, true) } }
+  val shown = remember(products, q, filter) {
+    products.filter { p ->
+      (q.isBlank() || p.name.contains(q, true) || p.sku.contains(q, true)) &&
+      when (filter) {
+        1 -> p.stockStatus == "outofstock"
+        2 -> p.manageStock && (p.stockQty ?: 0) in 1..5
+        else -> true
+      }
+    }
+  }
   fun scan() { try {
     val opts = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8, Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E, Barcode.FORMAT_CODE_128, Barcode.FORMAT_QR_CODE).enableAutoZoom().build()
     GmsBarcodeScanning.getClient(ctx, opts).startScan().addOnSuccessListener { b -> b.rawValue?.let { q = it } }.addOnFailureListener {}
   } catch (_: Exception) {} }
   Column(Modifier.padding(12.dp)) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-      OutlinedTextField(q, { q = it }, label = { Text("Search / SKU") }, modifier = Modifier.weight(1f), singleLine = true,
+      OutlinedTextField(q, { q = it }, label = { Text("Search name or SKU") }, modifier = Modifier.weight(1f), singleLine = true,
         shape = RoundedCornerShape(12.dp), colors = OutlinedTextFieldDefaults.colors(cursorColor = Green, focusedBorderColor = Green, unfocusedBorderColor = Color(0xFF34493A), focusedLabelColor = Lime))
       Spacer(Modifier.width(8.dp))
       Button({ scan() }, colors = ButtonDefaults.buttonColors(containerColor = Dark, contentColor = Lime),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp), shape = RoundedCornerShape(12.dp)) { Text("Scan", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
     }
-    Spacer(Modifier.height(6.dp)); Text("${products.count { it.manageStock }} of ${products.size} products track stock.", fontSize = 11.5.sp, color = Color(0xFF6E7D72)); Spacer(Modifier.height(8.dp))
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) { items(shown, key = { it.id }) { ProductRow(it, onSave) } }
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+      listOf("All" to 0, "Out of stock" to 1, "Low stock" to 2).forEach { (label, i) ->
+        val active = filter == i
+        Surface(color = if (active) Green else Color.White, shape = RoundedCornerShape(999.dp),
+          border = if (active) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD8E3D2)),
+          modifier = Modifier.clickable { filter = i }) {
+          Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+            color = if (active) Color.Black else Color(0xFF334038),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp))
+        }
+      }
+    }
+    Spacer(Modifier.height(4.dp))
+    Text("${products.count { it.manageStock }} of ${products.size} tracking stock  •  ${products.count { it.stockStatus == "outofstock" }} out of stock",
+      fontSize = 11.sp, color = Color(0xFF6E7D72))
+    Spacer(Modifier.height(8.dp))
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) { items(shown, key = { it.id }) { ProductRow(it, onUpdate) } }
   }
 }
-@Composable fun ProductRow(p: Product, onSave: (Product, Int) -> Unit) {
+
+@Composable fun ProductRow(p: Product, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
   var qty by remember(p.id) { mutableStateOf((p.stockQty ?: 0).toString()) }
-  var saved by remember { mutableStateOf(false) }
+  var busy by remember(p.id) { mutableStateOf(false) }
+  val outOfStock = p.stockStatus == "outofstock"
+  val low = p.manageStock && (p.stockQty ?: 0) in 1..5
+  val statusColor = when {
+    outOfStock -> Color(0xFF9B1C17)
+    low -> Color(0xFFB97300)
+    else -> Color(0xFF2F7A05)
+  }
+  val statusLabel = when {
+    outOfStock -> "OUT OF STOCK"
+    !p.manageStock -> "IN STOCK (not tracked)"
+    low -> "LOW STOCK"
+    else -> "IN STOCK"
+  }
   Surface(color = Color.White, shape = RoundedCornerShape(12.dp)) {
-    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-      Column(Modifier.weight(1f)) {
-        Text(p.name, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 2)
-        Row { Text("₦%,d".format(p.price.toLong()), fontSize = 12.5.sp, color = Green, fontWeight = FontWeight.Bold); Spacer(Modifier.width(8.dp))
-          Text(if (p.manageStock) "Qty: ${p.stockQty}" else "Not tracked", fontSize = 11.5.sp,
-            color = if (!p.manageStock) Color.Gray else if ((p.stockQty ?: 0) == 0) Color.Red else if ((p.stockQty ?: 0) <= 5) Color(0xFFB97300) else Color(0xFF2F7A05)) }
+    Column(Modifier.padding(12.dp)) {
+      Row(verticalAlignment = Alignment.Top) {
+        Column(Modifier.weight(1f)) {
+          Text(p.name, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 2)
+          Spacer(Modifier.height(3.dp))
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("₦%,d".format(p.price.toLong()), fontSize = 12.5.sp, color = Green, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(8.dp))
+            if (p.sku.isNotBlank()) Text("SKU: ${p.sku}", fontSize = 11.sp, color = Color(0xFF6E7D72))
+          }
+        }
+        Spacer(Modifier.width(8.dp))
+        Surface(color = when { outOfStock -> Color(0xFFFBE0DD); low -> Color(0xFFFFF4D6); else -> Color(0xFFE4F7D6) },
+          shape = RoundedCornerShape(999.dp)) {
+          Text(statusLabel, color = statusColor, fontSize = 9.5.sp, fontWeight = FontWeight.ExtraBold,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp))
+        }
       }
-      if (p.manageStock) {
-        OutlinedTextField(qty, { qty = it.filter { c -> c.isDigit() }; saved = false }, modifier = Modifier.width(86.dp), singleLine = true,
-          textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold), shape = RoundedCornerShape(9.dp))
+      Spacer(Modifier.height(10.dp))
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        // Track stock toggle
+        Text("Track", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF334038))
         Spacer(Modifier.width(6.dp))
-        Button({ val n = qty.toIntOrNull() ?: return@Button; onSave(p, n); saved = true },
-          colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Color.Black),
-          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp), shape = RoundedCornerShape(9.dp)) {
-          Text(if (saved) "✓" else "Save", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+        Switch(checked = p.manageStock, onCheckedChange = { v ->
+          // When enabling tracking with no qty, default to current field value
+          val newQty = if (v) (qty.toIntOrNull() ?: 0) else null
+          busy = true
+          onUpdate(p, newQty, v, null)
+        }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Green))
+        Spacer(Modifier.width(10.dp))
+        if (p.manageStock) {
+          OutlinedTextField(qty, { qty = it.filter { c -> c.isDigit() } },
+            label = { Text("Qty", fontSize = 11.sp) }, modifier = Modifier.width(82.dp), singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold),
+            shape = RoundedCornerShape(9.dp))
+          Spacer(Modifier.width(6.dp))
+          Button({
+            val n = qty.toIntOrNull() ?: 0
+            busy = true
+            // Saving a positive qty also marks in stock automatically
+            onUpdate(p, n, true, if (n > 0) "instock" else "outofstock")
+          }, modifier = Modifier.height(48.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Color.Black),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            shape = RoundedCornerShape(9.dp), enabled = !busy) {
+            Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+          }
+        }
+      }
+      Spacer(Modifier.height(8.dp))
+      // In stock / Out of stock quick toggle
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Button({
+          busy = true
+          // Marking out of stock with tracking on sets qty to 0 too
+          if (p.manageStock && outOfStock.not()) { qty = "0"; onUpdate(p, 0, true, "outofstock") }
+          else onUpdate(p, null, null, if (outOfStock) "instock" else "outofstock")
+        }, modifier = Modifier.weight(1f).height(42.dp),
+          colors = ButtonDefaults.buttonColors(
+            containerColor = if (outOfStock) Green else Color(0xFFFBE0DD),
+            contentColor = if (outOfStock) Color.Black else Color(0xFF9B1C17)),
+          shape = RoundedCornerShape(9.dp), enabled = !busy) {
+          Text(if (outOfStock) "✓ Mark in stock" else "Mark out of stock", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
       }
     }
   }
