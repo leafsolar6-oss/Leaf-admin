@@ -95,8 +95,7 @@ object Api {
   var base = "https://leafsolar.ng/wp-json/wc/v3/"
   var auth: String = ""
   fun basic(user:String,pass:String)=okhttp3.Credentials.basic(user,pass)
-  fun setAuth(u:String,p:String){auth=basic(u.trim(),p.trim())}
-  private fun exec(path: String, method: String = "GET", bodyJson: String? = null): String {
+  fun setAuth(u:String,p:String){auth=basic(u.trim(),p.trim())}  private fun exec(path: String, method: String = "GET", bodyJson: String? = null): String {
     val b = Request.Builder().url(base + path).header("Authorization", auth)
     if (bodyJson != null) b.method(method, bodyJson.toRequestBody("application/json".toMediaTypeOrNull()!!))
     else b.method(method, null)
@@ -121,31 +120,76 @@ object Api {
         o.optDouble("total", 0.0), o.optString("status", "pending"), o.optString("date_created_gmt", ""))
     }
   }
+  private fun parseProduct(p: JSONObject): Product {
+    val catsArr = p.optJSONArray("categories") ?: JSONArray()
+    val catNames = mutableListOf<String>()
+    for (c in 0 until catsArr.length()) {
+      val nm = catsArr.getJSONObject(c).optString("name", "")
+      if (nm.isNotBlank() && nm.lowercase() != "electronics") catNames.add(nm)
+    }
+    // Woo has no top-level "image"; use images[0].src
+    var img = ""
+    val imgs = p.optJSONArray("images")
+    if (imgs != null && imgs.length() > 0) img = imgs.getJSONObject(0).optString("src", "")
+    val saleStr = p.optString("sale_price", "")
+    return Product(p.getLong("id"), p.getString("name"), p.optString("sku"),
+      p.optDouble("price", 0.0), p.optBoolean("manage_stock"),
+      if (p.isNull("stock_quantity")) null else p.optInt("stock_quantity"),
+      p.optString("stock_status", "instock"), catNames,
+      img, p.optString("type", "simple"),
+      p.optDouble("regular_price", 0.0),
+      if (saleStr.isBlank()) null else p.optDouble("sale_price", 0.0))
+  }
+
   suspend fun products(): List<Product> = withContext(Dispatchers.IO) {
-    val all = mutableListOf<Product>(); var page = 1
-    while (true) {
-      val arr = JSONArray(exec("products?per_page=100&page=$page&status=publish&orderby=title&order=asc"))
-      if (arr.length() == 0) break
-      for (i in 0 until arr.length()) {
-        val p = arr.getJSONObject(i)
-        val catsArr = p.optJSONArray("categories") ?: JSONArray()
-        val catNames = mutableListOf<String>()
-        for (c in 0 until catsArr.length()) {
-          val nm = catsArr.getJSONObject(c).optString("name", "")
-          if (nm.isNotBlank() && nm.lowercase() != "electronics") catNames.add(nm)
-        }
-        all.add(Product(p.getLong("id"), p.getString("name"), p.optString("sku"),
-          p.optDouble("price", 0.0), p.optBoolean("manage_stock"),
-          if (p.isNull("stock_quantity")) null else p.optInt("stock_quantity"),
-          p.optString("stock_status", "instock"), catNames,
-          p.optString("image"), p.optString("type", "simple"),
-          p.optDouble("regular_price", 0.0),
-          if (p.isNull("sale_price") || p.optString("sale_price").isBlank()) null else p.optDouble("sale_price", 0.0)))
-      }
-      if (arr.length() < 100) break; page++
+    // Fetch page 1 first to learn total pages, then fetch remaining in parallel.
+    val first = exec("products?per_page=100&page=1&status=publish&orderby=title&order=asc")
+    val firstArr = JSONArray(first)
+    if (firstArr.length() == 0) return@withContext emptyList()
+    val all = mutableListOf<Product>()
+    for (i in 0 until firstArr.length()) all.add(parseProduct(firstArr.getJSONObject(i)))
+    if (firstArr.length() < 100) return@withContext all
+    // fetch remaining pages concurrently
+    val more = (2..20).map { page ->
+      async { runCatching { JSONArray(exec("products?per_page=100&page=$page&status=publish&orderby=title&order=asc")) } }
+    }.awaitAll()
+    for (res in more) {
+      val arr = res.getOrNull() ?: continue
+      for (i in 0 until arr.length()) all.add(parseProduct(arr.getJSONObject(i)))
+      if (arr.length() < 100) break
     }
     all
   }
+
+  suspend fun product(id: Long): Product? = withContext(Dispatchers.IO) {
+    try {
+      val raw = execPath("https://leafsolar.ng/wp-json/lfx/v1/product/$id")
+      val o = JSONObject(raw)
+      val cats = mutableListOf<String>()
+      val ca = o.optJSONArray("categories")
+      if (ca != null) for (i in 0 until ca.length()) cats.add(ca.getString(i))
+      val sale = if (o.isNull("sale_price")) null else o.optDouble("sale_price", 0.0)
+      Product(o.getLong("id"), o.getString("name"), o.optString("sku"),
+        o.optDouble("price", 0.0), o.optBoolean("manage_stock"),
+        if (o.isNull("stock_quantity")) null else o.optInt("stock_quantity"),
+        o.optString("stock_status", "instock"), cats, o.optString("image"),
+        o.optString("type", "simple"), o.optDouble("regular_price", 0.0), sale)
+    } catch (e: Exception) { null }
+  }
+
+  // Low-level call that accepts a full URL
+  private fun execPath(url: String, method: String = "GET", bodyJson: String? = null): String {
+    val b = Request.Builder().url(url).header("Authorization", auth)
+    if (bodyJson != null) b.method(method, bodyJson.toRequestBody("application/json".toMediaTypeOrNull()!!))
+    else b.method(method, null)
+    b.build().let { req ->
+      client.newCall(req).execute().use { r ->
+        if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+        return r.body?.string() ?: ""
+      }
+    }
+  }
+
   suspend fun updateProduct(id: Long, qty: Int? = null, manage: Boolean? = null, status: String? = null) = withContext(Dispatchers.IO) {
     val o = JSONObject()
     if (manage != null) o.put("manage_stock", manage)
@@ -153,6 +197,17 @@ object Api {
     if (status != null) o.put("stock_status", status)
     exec("products/$id", "PUT", o.toString())
   }
+
+  // One request to set status for many products
+  suspend fun bulkStock(ids: List<Long>, status: String): Pair<Int, Int> = withContext(Dispatchers.IO) {
+    val payload = JSONObject().put("ids", JSONArray(ids)).put("status", status).toString()
+    val raw = execPath("https://leafsolar.ng/wp-json/lfx/v1/bulk-stock", "POST", payload)
+    return@withContext try {
+      val o = JSONObject(raw)
+      o.optInt("updated", 0) to o.optInt("failed", 0)
+    } catch (e: Exception) { 0 to ids.size }
+  }
+
   suspend fun setStatus(id: Long, s: String) = withContext(Dispatchers.IO) { exec("orders/$id", "PUT", "{\"status\":\"$s\"}") }
 }
 
@@ -293,6 +348,7 @@ fun App(act: ComponentActivity) {
     }
 
     val onUpdate: (Product, Int?, Boolean?, String?) -> Unit = { p, qty, manage, status ->
+      // Instant optimistic update
       mutateProduct(p.id) { it.copy(
         manageStock = manage ?: it.manageStock,
         stockQty = qty ?: it.stockQty,
@@ -301,10 +357,11 @@ fun App(act: ComponentActivity) {
       scope.launch {
         try {
           Api.updateProduct(p.id, qty, manage, status)
-          runCatching { products.replaceAll(Api.products()) }
+          // Reconcile ONLY this one product (fast, no full 353-product refetch)
+          Api.product(p.id)?.let { fresh -> mutateProduct(p.id) { fresh } }
         } catch (e: Exception) {
           toast = "Save failed: ${e.message}"
-          runCatching { products.replaceAll(Api.products()) }
+          runCatching { Api.product(p.id)?.let { fresh -> mutateProduct(p.id) { fresh } } }
         }
       }
     }
@@ -321,21 +378,16 @@ fun App(act: ComponentActivity) {
         }
       }
       scope.launch {
-        var ok = 0; var fail = 0
-        coroutineScope {
-          ids.map { id ->
-            async(Dispatchers.IO) {
-              val r = runCatching {
-                if (status == "outofstock") Api.updateProduct(id, 0, true, "outofstock")
-                else Api.updateProduct(id, null, null, "instock")
-              }
-              if (r.isSuccess) ok++ else fail++
-            }
-          }.awaitAll()
-        }
+        // Single fast batch request instead of N calls
+        val (ok, fail) = Api.bulkStock(ids, status)
         toast = if (fail == 0) "Marked $ok product${if (ok==1)"" else "s"} ${if (status=="outofstock") "out of stock" else "in stock"}"
                 else "Done ($ok ok, $fail failed)"
-        runCatching { products.replaceAll(Api.products()) }
+        // Reconcile only the affected products
+        coroutineScope {
+          ids.map { id ->
+            async(Dispatchers.IO) { Api.product(id) }
+          }.awaitAll()
+        }.forEach { fresh -> fresh?.let { mutateProduct(it.id) { fresh } } }
       }
     }
 
