@@ -242,7 +242,7 @@ fun App(act: ComponentActivity) {
         Text(if (exp) "Hide" else "Details", fontSize = 12.5.sp, color = Green, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { exp = !exp }) }
     }
   }
-}
+
 @Composable fun Pill(s: String) {
   val bg = when (s) { "completed" -> Color(0xFFE4F7D6); "processing" -> Color(0xFFE3F0FF); "pending", "on-hold" -> Color(0xFFFFF4D6); else -> Color(0xFFFBE0DD) }
   val fg = when (s) { "completed" -> Color(0xFF2F7A05); "processing" -> Color(0xFF0B4FA0); "pending", "on-hold" -> Color(0xFF8A6300); else -> Color(0xFF9B1C17) }
