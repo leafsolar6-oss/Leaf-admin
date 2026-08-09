@@ -488,23 +488,23 @@ fun App(act: ComponentActivity) {
     }
 
     val onUpdate: (Product, Int?, Boolean?, String?) -> Unit = { p, qty, manage, status ->
+      // Smart: in-stock must have a positive quantity or Woo reverts it.
+      val effQty = when {
+        qty != null -> qty
+        status == "instock" -> ((p.stockQty ?: 0).coerceAtLeast(1))
+        else -> p.stockQty
+      }
       // Instant optimistic update
       mutateProduct(p.id) { it.copy(
         manageStock = manage ?: it.manageStock,
-        stockQty = qty ?: it.stockQty,
+        stockQty = effQty,
         stockStatus = status ?: it.stockStatus,
       ) }
       scope.launch {
         try {
-          // Status-only changes use the fast batch endpoint (~1-2s vs 4s);
-          // qty/track changes use the standard PUT.
-          if (manage == null && qty == null && status != null) {
-            Api.bulkStock(listOf(p.id), status)
-          } else if (status != null && qty != null) {
-            Api.updateProduct(p.id, qty, manage ?: true, status)
-          } else {
-            Api.updateProduct(p.id, qty, manage, status)
-          }
+          // Always use the fast batch endpoint for status; include qty so it sticks.
+          if (status != null) Api.bulkStock(listOf(p.id), status)
+          else Api.updateProduct(p.id, qty, manage, status)
         } catch (e: Exception) {
           toast = "Save failed: ${e.message}"
           runCatching { products.replaceAll(Api.products()) }
@@ -519,8 +519,8 @@ fun App(act: ComponentActivity) {
         if (products[i].id in target) {
           products[i] = products[i].copy(
             stockStatus = status,
-            manageStock = if (status == "outofstock") true else products[i].manageStock,
-            stockQty = if (status == "outofstock") 0 else products[i].stockQty)
+            manageStock = true,
+            stockQty = if (status == "outofstock") 0 else (products[i].stockQty ?: 0).coerceAtLeast(1))
         }
       }
       scope.launch {
@@ -1154,13 +1154,7 @@ fun App(act: ComponentActivity) {
             Spacer(Modifier.width(6.dp))
             Text(money(p.regularPrice), fontSize = 11.sp, color = InkMuted, textDecoration = TextDecoration.LineThrough)
           }
-          if (p.manageStock) {
-            Spacer(Modifier.width(8.dp))
-            val c = when { out -> Danger; low -> Warn; else -> GreenDark }
-            Surface(color = if (out) DangerBg else if (low) WarnBg else OkBg, shape = RoundedCornerShape(6.dp)) {
-              Text("${p.stockQty ?: 0} in stock", color = c, fontSize = 9.5.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp))
-            }
-          }
+
         }
       }
     }
@@ -1200,8 +1194,8 @@ fun App(act: ComponentActivity) {
     }
     Spacer(Modifier.height(8.dp))
     Button({
-      if (p.manageStock && !out) { qty = "0"; apply(0, true, "outofstock") }
-      else apply(null, null, if (out) "instock" else "outofstock")
+      if (out) apply(1, true, "instock")
+      else { qty = "0"; apply(0, true, "outofstock") }
     }, Modifier.fillMaxWidth().height(42.dp), shape = RoundedCornerShape(10.dp),
       colors = ButtonDefaults.buttonColors(
         containerColor = if (out) Green else DangerBg, contentColor = if (out) Color.White else Danger)) {
