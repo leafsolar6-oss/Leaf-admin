@@ -49,7 +49,8 @@ object Api {
   private val client = OkHttpClient()
   var base = "https://leafsolar.ng/wp-json/wc/v3/"
   var auth: String = ""
-  fun setAuth(u: String, p: String) { auth = Credentials.basic(u.trim(), p.trim()) }
+  fun basic(user:String,pass:String)=okhttp3.Credentials.basic(user,pass)
+  fun setAuth(u:String,p:String){auth=basic(u.trim(),p.trim())}
   private fun exec(path: String, method: String = "GET", bodyJson: String? = null): String {
     val b = Request.Builder().url(base + path).header("Authorization", auth)
     if (bodyJson != null) b.method(method, bodyJson.toRequestBody("application/json".toMediaTypeOrNull()!!))
