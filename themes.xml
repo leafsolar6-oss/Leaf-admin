@@ -1,0 +1,1 @@
+<resources><style name="Theme.LeafAdmin" parent="Theme.Material3.DayNight.NoActionBar"><item name="android:statusBarColor">@color/dark</item></style></resources>

@@ -1,0 +1,28 @@
+plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+android {
+  namespace 'ng.leafsolar.admin'
+  compileSdk 34
+  defaultConfig { applicationId "ng.leafsolar.admin"; minSdk 24; targetSdk 34; versionCode 3; versionName "1.2" }
+  sourceSets { main {
+    manifest.srcFile 'AndroidManifest.xml'
+    java.srcDirs = ['.']
+    res.srcDirs = ['.']
+    exclude 'app-build.gradle','build.gradle','settings.gradle','gradlew','gradlew.bat','gradle-wrapper.properties','README.md','build-apk.yml','gradle-wrapper.jar'
+  } }
+  buildFeatures { compose true; buildConfig true }
+  composeOptions { kotlinCompilerExtensionVersion '1.5.14' }
+  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+  kotlinOptions { jvmTarget='17' }
+}
+dependencies {
+  implementation 'androidx.core:core-ktx:1.13.1'
+  implementation 'androidx.activity:activity-compose:1.9.1'
+  implementation platform('androidx.compose:compose-bom:2024.06.00')
+  implementation 'androidx.compose.ui:ui'
+  implementation 'androidx.compose.material3:material3'
+  implementation 'androidx.compose.ui:ui-tooling-preview'
+  implementation 'androidx.compose.foundation:foundation'
+  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+  implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+  implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
+}
