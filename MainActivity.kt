@@ -230,6 +230,15 @@ object Api {
     val o = JSONObject().apply { if (point == null) put("reorder_point", "") else put("reorder_point", point) }
     return@withContext try { JSONObject(execPath("https://leafsolar.ng/wp-json/lfx/v1/product/$id/reorder","POST",o.toString())).optBoolean("ok",false) } catch(e:Exception){ false }
   }
+  // Quick add/remove: returns the new qty + status, or null on failure.
+  suspend fun adjustStock(id: Long, delta: Int): Pair<Int, String>? = withContext(Dispatchers.IO) {
+    val o = JSONObject().put("delta", delta)
+    return@withContext try {
+      val r = JSONObject(execPath("https://leafsolar.ng/wp-json/lfx/v1/product/$id/stock", "POST", o.toString()))
+      r.optInt("stock_quantity", 0) to r.optString("stock_status", "instock")
+    } catch (e: Exception) { null }
+  }
+
   suspend fun bulkReorder(ids: List<Long>, point: Int): Int = withContext(Dispatchers.IO) {
     val o = JSONObject().put("ids", JSONArray(ids)).put("reorder_point", point)
     return@withContext try { JSONObject(execPath("https://leafsolar.ng/wp-json/lfx/v1/bulk-reorder","POST",o.toString())).optInt("updated",0) } catch(e:Exception){ 0 }
@@ -564,6 +573,34 @@ fun App(act: ComponentActivity) {
       }
     }
 
+    // Quick add/remove stock. Local qty updates instantly; rapid taps are coalesced
+    // and sent as the net delta after a short pause for efficiency.
+    val pendingDeltas = remember { mutableStateMapOf<Long, Int>() }
+    val adjustJobs = remember { mutableMapOf<Long, Job>() }
+    val onAdjust: (Product, Int) -> Unit = { p, delta ->
+      val cur = pendingDeltas[p.id] ?: 0
+      val net = cur + delta
+      pendingDeltas[p.id] = net
+      // optimistic local display
+      mutateProduct(p.id) {
+        val nq = ((it.stockQty ?: 0) + delta).coerceAtLeast(0)
+        it.copy(stockQty = nq, manageStock = true, stockStatus = if (nq > 0) "instock" else "outofstock")
+      }
+      adjustJobs[p.id]?.cancel()
+      adjustJobs[p.id] = scope.launch {
+        delay(350) // coalesce bursts of +/- taps
+        val d = pendingDeltas.remove(p.id) ?: return@launch
+        val res = Api.adjustStock(p.id, d)
+        if (res != null) {
+          mutateProduct(p.id) { it.copy(stockQty = res.first, stockStatus = res.second) }
+        } else {
+          toast = "Stock update failed"
+          runCatching { Api.product(p.id)?.let { fr -> mutateProduct(p.id) { fr } } }
+        }
+        adjustJobs.remove(p.id)
+      }
+    }
+
     MainScaffold(tab, { tab = it }, orders, products, refreshing, lastSync,
       onLogout = {
         val t = PushStore.getToken(ctx)
@@ -576,7 +613,8 @@ fun App(act: ComponentActivity) {
       onBulkStock = onBulkStock,
       onBulkTrack = onBulkTrack,
       onPrice = onPrice,
-      onReorder = onReorder
+      onReorder = onReorder,
+      onAdjust = onAdjust
     )
   }
 }
@@ -636,7 +674,8 @@ fun App(act: ComponentActivity) {
   onBulkStock: (List<Long>, String) -> Unit,
   onBulkTrack: (List<Long>, Boolean) -> Unit,
   onPrice: (Product, Double, Double?) -> Unit,
-  onReorder: (Product, Int?) -> Unit
+  onReorder: (Product, Int?) -> Unit,
+  onAdjust: (Product, Int) -> Unit
 ) {
   val pending = orders.count { it.status == "pending" || it.status == "on-hold" }
   val titles = listOf("Dashboard", "Orders", "Inventory")
@@ -683,7 +722,7 @@ fun App(act: ComponentActivity) {
       when (tab) {
         0 -> DashboardScreen(orders, products, onRefresh)
         1 -> OrdersScreen(orders, onRefresh, onStatus)
-        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder)
+        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder, onAdjust)
       }
     }
   }
@@ -902,7 +941,8 @@ fun App(act: ComponentActivity) {
   onBulkStock: (List<Long>, String) -> Unit,
   onBulkTrack: (List<Long>, Boolean) -> Unit,
   onPrice: (Product, Double, Double?) -> Unit,
-  onReorder: (Product, Int?) -> Unit
+  onReorder: (Product, Int?) -> Unit,
+  onAdjust: (Product, Int) -> Unit
 ) {
   var q by remember { mutableStateOf("") }
   var stockFilter by remember { mutableStateOf(0) }
@@ -1043,7 +1083,7 @@ fun App(act: ComponentActivity) {
     PullRefresh(false, onRefresh) {
       if (shown.isEmpty()) EmptyState("No products match")
       else LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(shown, key = { it.id }) { ProductRow(it, onUpdate, onPrice, onReorder, selectMode, it.id in selected, ::toggleSel) }
+        items(shown, key = { it.id }) { ProductRow(it, onUpdate, onPrice, onReorder, onAdjust, selectMode, it.id in selected, ::toggleSel) }
         item { Spacer(Modifier.height(60.dp)) }
       }
     }
@@ -1052,7 +1092,7 @@ fun App(act: ComponentActivity) {
 
 @Composable fun ProductRow(
   p: Product, onUpdate: (Product, Int?, Boolean?, String?) -> Unit, onPrice: (Product, Double, Double?) -> Unit,
-  onReorder: (Product, Int?) -> Unit,
+  onReorder: (Product, Int?) -> Unit, onAdjust: (Product, Int) -> Unit,
   selectMode: Boolean = false, selected: Boolean = false, onToggle: (Long) -> Unit = {}
 ) {
   var reorderDlg by remember(p.id) { mutableStateOf(false) }
@@ -1132,21 +1172,30 @@ fun App(act: ComponentActivity) {
         apply(if (v) (qty.toIntOrNull() ?: 0) else null, v, null)
       }, colors = SwitchDefaults.colors(checkedTrackColor = Green, checkedThumbColor = Color.White))
       Spacer(Modifier.weight(1f))
-      if (syncing) {
-        CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(20.dp), color = Green)
-      }
-      if (p.manageStock) {
+      if (syncing) CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(20.dp), color = Green)
+    }
+    if (p.manageStock) {
+      Spacer(Modifier.height(8.dp))
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        // Quick remove/add stock
+        Surface(color = DangerBg, shape = CircleShape, modifier = Modifier.size(40.dp).clickable(enabled = (p.stockQty ?: 0) > 0) {
+          qty = ((qty.toIntOrNull() ?: (p.stockQty ?: 0)) - 1).coerceAtLeast(0).toString(); onAdjust(p, -1)
+        }) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Remove, "Remove stock", tint = Danger, modifier = Modifier.size(20.dp)) } }
         Spacer(Modifier.width(8.dp))
         OutlinedTextField(qty, { qty = it.filter { c -> c.isDigit() }; syncing = false }, label = { Text("Qty", fontSize = 10.sp) },
-          singleLine = true, modifier = Modifier.width(80.dp),
+          singleLine = true, modifier = Modifier.weight(1f),
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-          textStyle = TextStyle(fontWeight = FontWeight.Bold, fontSize = 14.sp),
+          textStyle = TextStyle(fontWeight = FontWeight.Bold, fontSize = 14.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center),
           shape = RoundedCornerShape(10.dp))
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(8.dp))
+        Surface(color = OkBg, shape = CircleShape, modifier = Modifier.size(40.dp).clickable {
+          qty = ((qty.toIntOrNull() ?: (p.stockQty ?: 0)) + 1).toString(); onAdjust(p, 1)
+        }) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Add, "Add stock", tint = GreenDark, modifier = Modifier.size(20.dp)) } }
+        Spacer(Modifier.width(8.dp))
         Button({ val n = qty.toIntOrNull() ?: 0; apply(n, true, if (n > 0) "instock" else "outofstock") },
           shape = RoundedCornerShape(10.dp),
           colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Color.White),
-          contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), modifier = Modifier.height(46.dp)) { Text("Save", fontWeight = FontWeight.Bold) }
+          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp), modifier = Modifier.height(46.dp)) { Text("Set", fontWeight = FontWeight.Bold) }
       }
     }
     Spacer(Modifier.height(8.dp))

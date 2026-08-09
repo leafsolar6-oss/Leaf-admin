@@ -2,7 +2,7 @@ plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android'; id 'c
 android {
   namespace 'ng.leafsolar.admin'
   compileSdk 34
-  defaultConfig { applicationId "ng.leafsolar.admin"; minSdk 24; targetSdk 34; versionCode 15; versionName "2.7" }
+  defaultConfig { applicationId "ng.leafsolar.admin"; minSdk 24; targetSdk 34; versionCode 16; versionName "2.8" }
   buildFeatures { compose true; buildConfig true }
   composeOptions { kotlinCompilerExtensionVersion '1.5.14' }
   compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
