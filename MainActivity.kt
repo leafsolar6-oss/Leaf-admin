@@ -14,7 +14,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,7 +21,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -95,7 +96,6 @@ object Api {
     }
     all
   }
-  // qty = null means don't change quantity; manage = null means don't change tracking; status = null means don't change status
   suspend fun updateProduct(id: Long, qty: Int? = null, manage: Boolean? = null, status: String? = null) = withContext(Dispatchers.IO) {
     val o = JSONObject()
     if (manage != null) o.put("manage_stock", manage)
@@ -186,6 +186,12 @@ fun App(act: ComponentActivity) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Leaf Admin", color = Lime, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
+            if (refreshing) {
+              CircularProgressIndicator(color = Lime, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.width(10.dp))
+            }
+            Text("Refresh", color = Color(0xFFB9C7BD), fontSize = 13.sp, modifier = Modifier.clickable { refresh() })
+            Spacer(Modifier.width(14.dp))
             Text("Logout", color = Color(0xFF8AA092), fontSize = 13.sp, modifier = Modifier.clickable {
               prefs.edit().clear().apply(); logged = false
             })
@@ -205,22 +211,25 @@ fun App(act: ComponentActivity) {
     }) { pad ->
       Box(Modifier.padding(pad)) {
         when (tab) {
-          0 -> Dashboard(orders, products, onRefresh = { refresh() }, refreshing = refreshing)
-          1 -> Orders(orders, refreshing = refreshing, onRefresh = { refresh() },
+          0 -> Dashboard(orders, products)
+          1 -> Orders(orders,
             onStatus = { o, s ->
               scope.launch {
+                refreshing = true
                 try {
                   Api.setStatus(o.id, s)
                   orders = Api.orders()
-                  toast = "Order #${o.number} → ${s.replaceFirstChar { it.uppercase() }} · customer emailed"
+                  toast = "Order #${o.number} updated to ${s.replaceFirstChar { it.uppercase() }} — customer emailed"
                 } catch (e: Exception) {
                   toast = "Update failed: ${e.message}"
                 }
+                refreshing = false
               }
             })
-          else -> Inventory(act, products, refreshing = refreshing, onRefresh = { refresh() },
+          else -> Inventory(act, products,
             onUpdate = { p, qty, manage, status ->
               scope.launch {
+                refreshing = true
                 try {
                   Api.updateProduct(p.id, qty, manage, status)
                   products = Api.products()
@@ -228,6 +237,7 @@ fun App(act: ComponentActivity) {
                 } catch (e: Exception) {
                   toast = "Save failed: ${e.message}"
                 }
+                refreshing = false
               }
             })
         }
@@ -242,20 +252,19 @@ fun App(act: ComponentActivity) {
   focusedLabelColor = Lime, unfocusedLabelColor = Color(0xFF8AA092),
   focusedTextColor = Color.White, unfocusedTextColor = Color.White)
 
-@Composable fun Dashboard(orders: List<Order>, products: List<Product>, refreshing: Boolean = false, onRefresh: () -> Unit = {}) {
+@Composable fun Dashboard(orders: List<Order>, products: List<Product>) {
   val rev = orders.filter { it.status in listOf("processing", "completed") }.sumOf { it.total }
   val pend = orders.count { it.status == "pending" || it.status == "on-hold" }
   val done = orders.count { it.status == "completed" }
   val low = products.count { it.stockStatus == "outofstock" || (it.manageStock && ((it.stockQty ?: 0) <= 5)) }
   val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
   val tod = orders.count { it.date.startsWith(today) }
-  PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
   Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     Stat("Today's orders", tod.toString())
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
       Mini("Revenue", "₦%,d".format(rev.toLong()), Modifier.weight(1f)); Mini("Pending", pend.toString(), Modifier.weight(1f)) }
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-      Mini("Completed", done.toString(), Modifier.weight(1f)); Mini("Low stock", low.toString(), Modifier.weight(1f)) }
+      Mini("Completed", done.toString(), Modifier.weight(1f)); Mini("Low / out of stock", low.toString(), Modifier.weight(1f)) }
     Surface(color = Color.White, shape = RoundedCornerShape(14.dp)) {
       Column(Modifier.padding(14.dp)) {
         Text("Recent orders", fontWeight = FontWeight.Bold, fontSize = 15.sp); Spacer(Modifier.height(8.dp))
@@ -269,61 +278,77 @@ fun App(act: ComponentActivity) {
       }
     }
   }
-  }
 }
 @Composable fun Stat(l: String, v: String) { Surface(color = Color.White, shape = RoundedCornerShape(14.dp)) { Column(Modifier.padding(16.dp)) { Text(v, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Green); Text(l, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF5b6b61)) } } }
 @Composable fun Mini(l: String, v: String, m: Modifier) { Surface(color = Color.White, shape = RoundedCornerShape(14.dp), modifier = m) { Column(Modifier.padding(14.dp)) { Text(v, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = Green); Text(l, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF5b6b61)) } } }
 
-@Composable fun Orders(orders: List<Order>, refreshing: Boolean, onRefresh: () -> Unit, onStatus: (Order, String) -> Unit) {
+@OptIn(ExperimentalLayoutApi::class)
+@Composable fun Orders(orders: List<Order>, onStatus: (Order, String) -> Unit) {
   var filter by remember { mutableStateOf("all") }
   val ctx = LocalContext.current
   val filters = listOf("all" to "All", "pending" to "Pending", "on-hold" to "Hold",
     "processing" to "Processing", "completed" to "Done", "cancelled" to "Cancelled")
-  val shown = remember(orders, filter) { if (filter == "all") orders else orders.filter { it.status == filter } }
-  val counts = remember(orders) {
-    mapOf("pending" to orders.count { it.status == "pending" || it.status == "on-hold" },
-          "processing" to orders.count { it.status == "processing" },
-          "completed" to orders.count { it.status == "completed" },
-          "cancelled" to orders.count { it.status == "cancelled" })
+  val shown = remember(orders, filter) {
+    when (filter) {
+      "all" -> orders
+      "pending" -> orders.filter { it.status == "pending" || it.status == "on-hold" }
+      else -> orders.filter { it.status == filter }
+    }
   }
-  PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
   Column(Modifier.fillMaxSize().padding(12.dp)) {
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-      Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+      FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
         filters.forEach { (k, label) ->
           val active = filter == k
+          val count = when (k) {
+            "pending" -> orders.count { it.status == "pending" || it.status == "on-hold" }
+            "processing" -> orders.count { it.status == "processing" }
+            "completed" -> orders.count { it.status == "completed" }
+            "cancelled" -> orders.count { it.status == "cancelled" }
+            else -> orders.size
+          }
           Surface(color = if (active) Green else Color.White, shape = RoundedCornerShape(999.dp),
             border = if (active) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD8E3D2)),
             modifier = Modifier.clickable { filter = k }) {
-            Text(label, fontSize = 11.5.sp, fontWeight = FontWeight.Bold,
+            Text("$label $count", fontSize = 11.5.sp, fontWeight = FontWeight.Bold,
               color = if (active) Color.Black else Color(0xFF334038),
               modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp))
           }
         }
       }
     }
-    Spacer(Modifier.height(4.dp))
-    Text("${shown.size} order${if (shown.size == 1) "" else "s"} shown  •  status changes email the customer automatically",
+    Spacer(Modifier.height(6.dp))
+    Text("${shown.size} order${if (shown.size == 1) "" else "s"}  •  changing status emails the customer automatically",
       fontSize = 10.5.sp, color = Color(0xFF6E7D72))
     Spacer(Modifier.height(8.dp))
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
-      items(shown, key = { it.id }) { OrderCard(it, onStatus, onCall = {
-        if (o.phone.isNotBlank()) {
-          val i = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${o.phone.trim()}"))
-          runCatching { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    if (shown.isEmpty()) {
+      Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text("No orders in this view", color = Color(0xFF6E7D72), fontSize = 13.sp)
+      }
+    } else {
+      LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
+        items(shown, key = { it.id }) { ord ->
+          OrderCard(ord, onStatus, onCall = {
+            if (ord.phone.isNotBlank()) runCatching {
+              val i = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${ord.phone.trim()}"))
+              ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+          }, onWhatsApp = {
+            val raw = ord.phone.replace(Regex("[^0-9]"), "")
+            val num = if (raw.startsWith("0")) "234" + raw.trimStart('0') else raw
+            val msg = "Hello ${ord.name}, regarding your Leaf Solar order #${ord.number}."
+            runCatching {
+              val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$num?text=" + Uri.encode(msg)))
+              ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+          })
         }
-      }, onWhatsApp = {
-        val num = o.phone.replace(Regex("[^0-9]"), "").let {
-          if (it.startsWith("0")) "234" + it.trimStart('0') else it
-        }
-        val msg = "Hello ${o.name}, regarding your Leaf Solar order #${o.number}."
-        val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$num?text=" + Uri.encode(msg)))
-        runCatching { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-      }) }
+      }
     }
   }
-  }
 }
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable fun OrderCard(o: Order, onStatus: (Order, String) -> Unit, onCall: () -> Unit = {}, onWhatsApp: () -> Unit = {}) {
   var exp by remember { mutableStateOf(false) }
   val ctx = LocalContext.current
@@ -341,15 +366,14 @@ fun App(act: ComponentActivity) {
         Spacer(Modifier.height(10.dp))
         o.items.forEach { Text("• $it", fontSize = 13.sp, color = Color(0xFF334038)) }
         Spacer(Modifier.height(6.dp))
-        Text(o.email, fontSize = 12.sp, color = Color(0xFF6E7D72),
+        if (o.email.isNotBlank()) Text(o.email, fontSize = 12.sp, color = Color(0xFF2F7A05),
           modifier = Modifier.clickable {
-            if (o.email.isNotBlank()) runCatching {
+            runCatching {
               val i = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${o.email}"))
               ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
           })
         Spacer(Modifier.height(8.dp))
-        // Contact shortcuts
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
           SmallChip("📞 Call", onCall)
           SmallChip("💬 WhatsApp", onWhatsApp)
@@ -391,9 +415,9 @@ fun App(act: ComponentActivity) {
   Surface(color = bg, shape = RoundedCornerShape(999.dp)) { Text(s.uppercase(), color = fg, fontSize = 10.5.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)) }
 }
 
-@Composable fun Inventory(act: ComponentActivity, products: List<Product>, refreshing: Boolean = false, onRefresh: () -> Unit = {}, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
+@Composable fun Inventory(act: ComponentActivity, products: List<Product>, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
   var q by remember { mutableStateOf("") }
-  var filter by remember { mutableStateOf(0) } // 0=all, 1=out, 2=low
+  var filter by remember { mutableStateOf(0) }
   val ctx = LocalContext.current
   val shown = remember(products, q, filter) {
     products.filter { p ->
@@ -409,7 +433,6 @@ fun App(act: ComponentActivity) {
     val opts = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8, Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E, Barcode.FORMAT_CODE_128, Barcode.FORMAT_QR_CODE).enableAutoZoom().build()
     GmsBarcodeScanning.getClient(ctx, opts).startScan().addOnSuccessListener { b -> b.rawValue?.let { q = it } }.addOnFailureListener {}
   } catch (_: Exception) {} }
-  PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
   Column(Modifier.fillMaxSize().padding(12.dp)) {
     Row(verticalAlignment = Alignment.CenterVertically) {
       OutlinedTextField(q, { q = it }, label = { Text("Search name or SKU") }, modifier = Modifier.weight(1f), singleLine = true,
@@ -419,7 +442,7 @@ fun App(act: ComponentActivity) {
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp), shape = RoundedCornerShape(12.dp)) { Text("Scan", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
     }
     Spacer(Modifier.height(8.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    FlowRowSafe {
       listOf("All" to 0, "Out of stock" to 1, "Low stock" to 2).forEach { (label, i) ->
         val active = filter == i
         Surface(color = if (active) Green else Color.White, shape = RoundedCornerShape(999.dp),
@@ -437,7 +460,11 @@ fun App(act: ComponentActivity) {
     Spacer(Modifier.height(8.dp))
     LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(shown, key = { it.id }) { ProductRow(it, onUpdate) } }
   }
-  }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable fun FlowRowSafe(content: @Composable FlowRowScope.() -> Unit) {
+  FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), content = content)
 }
 
 @Composable fun ProductRow(p: Product, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
@@ -477,11 +504,9 @@ fun App(act: ComponentActivity) {
       }
       Spacer(Modifier.height(10.dp))
       Row(verticalAlignment = Alignment.CenterVertically) {
-        // Track stock toggle
         Text("Track", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF334038))
         Spacer(Modifier.width(6.dp))
         Switch(checked = p.manageStock, onCheckedChange = { v ->
-          // When enabling tracking with no qty, default to current field value
           val newQty = if (v) (qty.toIntOrNull() ?: 0) else null
           busy = true
           onUpdate(p, newQty, v, null)
@@ -490,14 +515,13 @@ fun App(act: ComponentActivity) {
         if (p.manageStock) {
           OutlinedTextField(qty, { qty = it.filter { c -> c.isDigit() } },
             label = { Text("Qty", fontSize = 11.sp) }, modifier = Modifier.width(82.dp), singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
-            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NUMBER),
+            textStyle = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold),
             shape = RoundedCornerShape(9.dp))
           Spacer(Modifier.width(6.dp))
           Button({
             val n = qty.toIntOrNull() ?: 0
             busy = true
-            // Saving a positive qty also marks in stock automatically
             onUpdate(p, n, true, if (n > 0) "instock" else "outofstock")
           }, modifier = Modifier.height(48.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Color.Black),
@@ -508,12 +532,10 @@ fun App(act: ComponentActivity) {
         }
       }
       Spacer(Modifier.height(8.dp))
-      // In stock / Out of stock quick toggle
       Row(verticalAlignment = Alignment.CenterVertically) {
         Button({
           busy = true
-          // Marking out of stock with tracking on sets qty to 0 too
-          if (p.manageStock && outOfStock.not()) { qty = "0"; onUpdate(p, 0, true, "outofstock") }
+          if (p.manageStock && !outOfStock) { qty = "0"; onUpdate(p, 0, true, "outofstock") }
           else onUpdate(p, null, null, if (outOfStock) "instock" else "outofstock")
         }, modifier = Modifier.weight(1f).height(42.dp),
           colors = ButtonDefaults.buttonColors(
