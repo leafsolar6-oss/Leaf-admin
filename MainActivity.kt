@@ -415,6 +415,7 @@ fun App(act: ComponentActivity) {
   Surface(color = bg, shape = RoundedCornerShape(999.dp)) { Text(s.uppercase(), color = fg, fontSize = 10.5.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)) }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable fun Inventory(act: ComponentActivity, products: List<Product>, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
   var q by remember { mutableStateOf("") }
   var filter by remember { mutableStateOf(0) }
@@ -515,7 +516,7 @@ fun App(act: ComponentActivity) {
         if (p.manageStock) {
           OutlinedTextField(qty, { qty = it.filter { c -> c.isDigit() } },
             label = { Text("Qty", fontSize = 11.sp) }, modifier = Modifier.width(82.dp), singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NUMBER),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             textStyle = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold),
             shape = RoundedCornerShape(9.dp))
           Spacer(Modifier.width(6.dp))
