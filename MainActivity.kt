@@ -1,6 +1,9 @@
 package ng.leafsolar.admin
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -11,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -121,14 +125,29 @@ fun App(act: ComponentActivity) {
   var tab by remember { mutableStateOf(0) }
   var orders by remember { mutableStateOf<List<Order>>(emptyList()) }
   var products by remember { mutableStateOf<List<Product>>(emptyList()) }
+  var refreshing by remember { mutableStateOf(false) }
+  var toast by remember { mutableStateOf<String?>(null) }
   val scope = rememberCoroutineScope()
+  val ctx = act.applicationContext
+
+  fun refresh() {
+    scope.launch {
+      refreshing = true
+      try { orders = Api.orders(); products = Api.products() }
+      catch (e: Exception) { toast = "Couldn't refresh: ${e.message}" }
+      refreshing = false
+    }
+  }
 
   LaunchedEffect(Unit) {
     val u = prefs.getString("u", null); val p = prefs.getString("p", null)
     if (u != null && p != null) { Api.setAuth(u, p); user = u; pass = p; logged = true }
   }
-  LaunchedEffect(logged) {
-    if (logged) { try { orders = Api.orders(); products = Api.products() } catch (_: Exception) {} }
+  LaunchedEffect(logged) { if (logged) refresh() }
+  toast?.let { msg ->
+    LaunchedEffect(msg) {
+      Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show(); toast = null
+    }
   }
 
   if (!logged) {
@@ -186,16 +205,31 @@ fun App(act: ComponentActivity) {
     }) { pad ->
       Box(Modifier.padding(pad)) {
         when (tab) {
-          0 -> Dashboard(orders, products)
-          1 -> Orders(orders) { o, s -> scope.launch { try { Api.setStatus(o.id, s); orders = Api.orders() } catch (_: Exception) {} } }
-          else -> Inventory(act, products, onUpdate = { p, qty, manage, status ->
-            scope.launch {
-              try {
-                Api.updateProduct(p.id, qty, manage, status)
-                products = Api.products()
-              } catch (_: Exception) {}
-            }
-          })
+          0 -> Dashboard(orders, products, onRefresh = { refresh() }, refreshing = refreshing)
+          1 -> Orders(orders, refreshing = refreshing, onRefresh = { refresh() },
+            onStatus = { o, s ->
+              scope.launch {
+                try {
+                  Api.setStatus(o.id, s)
+                  orders = Api.orders()
+                  toast = "Order #${o.number} → ${s.replaceFirstChar { it.uppercase() }} · customer emailed"
+                } catch (e: Exception) {
+                  toast = "Update failed: ${e.message}"
+                }
+              }
+            })
+          else -> Inventory(act, products, refreshing = refreshing, onRefresh = { refresh() },
+            onUpdate = { p, qty, manage, status ->
+              scope.launch {
+                try {
+                  Api.updateProduct(p.id, qty, manage, status)
+                  products = Api.products()
+                  toast = "Inventory saved"
+                } catch (e: Exception) {
+                  toast = "Save failed: ${e.message}"
+                }
+              }
+            })
         }
       }
     }
@@ -208,13 +242,14 @@ fun App(act: ComponentActivity) {
   focusedLabelColor = Lime, unfocusedLabelColor = Color(0xFF8AA092),
   focusedTextColor = Color.White, unfocusedTextColor = Color.White)
 
-@Composable fun Dashboard(orders: List<Order>, products: List<Product>) {
+@Composable fun Dashboard(orders: List<Order>, products: List<Product>, refreshing: Boolean = false, onRefresh: () -> Unit = {}) {
   val rev = orders.filter { it.status in listOf("processing", "completed") }.sumOf { it.total }
   val pend = orders.count { it.status == "pending" || it.status == "on-hold" }
   val done = orders.count { it.status == "completed" }
   val low = products.count { it.stockStatus == "outofstock" || (it.manageStock && ((it.stockQty ?: 0) <= 5)) }
   val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
   val tod = orders.count { it.date.startsWith(today) }
+  PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
   Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     Stat("Today's orders", tod.toString())
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
@@ -224,6 +259,7 @@ fun App(act: ComponentActivity) {
     Surface(color = Color.White, shape = RoundedCornerShape(14.dp)) {
       Column(Modifier.padding(14.dp)) {
         Text("Recent orders", fontWeight = FontWeight.Bold, fontSize = 15.sp); Spacer(Modifier.height(8.dp))
+        if (orders.isEmpty()) Text("No orders yet.", fontSize = 12.5.sp, color = Color(0xFF6E7D72))
         orders.take(5).forEach { o ->
           Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { Text("#${o.number}", fontWeight = FontWeight.Bold, fontSize = 13.5.sp); Text(o.name, fontSize = 12.sp, color = Color(0xFF5b6b61)) }
@@ -233,34 +269,121 @@ fun App(act: ComponentActivity) {
       }
     }
   }
+  }
 }
 @Composable fun Stat(l: String, v: String) { Surface(color = Color.White, shape = RoundedCornerShape(14.dp)) { Column(Modifier.padding(16.dp)) { Text(v, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Green); Text(l, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF5b6b61)) } } }
 @Composable fun Mini(l: String, v: String, m: Modifier) { Surface(color = Color.White, shape = RoundedCornerShape(14.dp), modifier = m) { Column(Modifier.padding(14.dp)) { Text(v, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = Green); Text(l, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF5b6b61)) } } }
 
-@Composable fun Orders(orders: List<Order>, onStatus: (Order, String) -> Unit) {
-  LazyColumn(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(orders, key = { it.id }) { OrderCard(it, onStatus) } }
+@Composable fun Orders(orders: List<Order>, refreshing: Boolean, onRefresh: () -> Unit, onStatus: (Order, String) -> Unit) {
+  var filter by remember { mutableStateOf("all") }
+  val ctx = LocalContext.current
+  val filters = listOf("all" to "All", "pending" to "Pending", "on-hold" to "Hold",
+    "processing" to "Processing", "completed" to "Done", "cancelled" to "Cancelled")
+  val shown = remember(orders, filter) { if (filter == "all") orders else orders.filter { it.status == filter } }
+  val counts = remember(orders) {
+    mapOf("pending" to orders.count { it.status == "pending" || it.status == "on-hold" },
+          "processing" to orders.count { it.status == "processing" },
+          "completed" to orders.count { it.status == "completed" },
+          "cancelled" to orders.count { it.status == "cancelled" })
+  }
+  PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
+  Column(Modifier.fillMaxSize().padding(12.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+      Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+        filters.forEach { (k, label) ->
+          val active = filter == k
+          Surface(color = if (active) Green else Color.White, shape = RoundedCornerShape(999.dp),
+            border = if (active) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD8E3D2)),
+            modifier = Modifier.clickable { filter = k }) {
+            Text(label, fontSize = 11.5.sp, fontWeight = FontWeight.Bold,
+              color = if (active) Color.Black else Color(0xFF334038),
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp))
+          }
+        }
+      }
+    }
+    Spacer(Modifier.height(4.dp))
+    Text("${shown.size} order${if (shown.size == 1) "" else "s"} shown  •  status changes email the customer automatically",
+      fontSize = 10.5.sp, color = Color(0xFF6E7D72))
+    Spacer(Modifier.height(8.dp))
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
+      items(shown, key = { it.id }) { OrderCard(it, onStatus, onCall = {
+        if (o.phone.isNotBlank()) {
+          val i = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${o.phone.trim()}"))
+          runCatching { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        }
+      }, onWhatsApp = {
+        val num = o.phone.replace(Regex("[^0-9]"), "").let {
+          if (it.startsWith("0")) "234" + it.trimStart('0') else it
+        }
+        val msg = "Hello ${o.name}, regarding your Leaf Solar order #${o.number}."
+        val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$num?text=" + Uri.encode(msg)))
+        runCatching { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+      }) }
+    }
+  }
+  }
 }
-@Composable fun OrderCard(o: Order, onStatus: (Order, String) -> Unit) {
+@Composable fun OrderCard(o: Order, onStatus: (Order, String) -> Unit, onCall: () -> Unit = {}, onWhatsApp: () -> Unit = {}) {
   var exp by remember { mutableStateOf(false) }
+  val ctx = LocalContext.current
   Surface(color = Color.White, shape = RoundedCornerShape(14.dp), shadowElevation = 2.dp) {
     Column(Modifier.padding(14.dp)) {
       Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) { Text("#${o.number}", fontWeight = FontWeight.Bold, fontSize = 16.sp); Text(o.name, fontSize = 13.sp, color = Color(0xFF425347)); if (o.phone.isNotEmpty()) Text(o.phone, fontSize = 12.sp, color = Color(0xFF6E7D72)) }
+        Column(Modifier.weight(1f)) {
+          Text("#${o.number}", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+          Text(o.name, fontSize = 13.sp, color = Color(0xFF425347))
+          if (o.phone.isNotEmpty()) Text(o.phone, fontSize = 12.sp, color = Color(0xFF6E7D72))
+        }
         Pill(o.status)
       }
       if (exp) {
-        Spacer(Modifier.height(10.dp)); o.items.forEach { Text("• $it", fontSize = 13.sp, color = Color(0xFF334038)) }
-        Spacer(Modifier.height(8.dp)); Text(o.email, fontSize = 12.sp, color = Color(0xFF6E7D72))
-        Spacer(Modifier.height(10.dp)); Text("Change status", fontSize = 12.sp, fontWeight = FontWeight.Bold); Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("pending", "on-hold", "processing", "completed", "cancelled").forEach { s ->
-          Surface(color = if (s == o.status) Green else Color(0xFFEFF4EC), shape = RoundedCornerShape(8.dp), modifier = Modifier.clickable { onStatus(o, s) }) {
-            Text(s.take(4).replaceFirstChar { it.uppercase() }, fontSize = 10.5.sp, fontWeight = FontWeight.Bold, color = if (s == o.status) Color.Black else Color(0xFF334038), modifier = Modifier.padding(horizontal = 9.dp, vertical = 7.dp)) } } } }
+        Spacer(Modifier.height(10.dp))
+        o.items.forEach { Text("• $it", fontSize = 13.sp, color = Color(0xFF334038)) }
+        Spacer(Modifier.height(6.dp))
+        Text(o.email, fontSize = 12.sp, color = Color(0xFF6E7D72),
+          modifier = Modifier.clickable {
+            if (o.email.isNotBlank()) runCatching {
+              val i = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${o.email}"))
+              ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+          })
+        Spacer(Modifier.height(8.dp))
+        // Contact shortcuts
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+          SmallChip("📞 Call", onCall)
+          SmallChip("💬 WhatsApp", onWhatsApp)
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("Update status — customer gets an email", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = Color(0xFF425347))
+        Spacer(Modifier.height(6.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          listOf("pending", "on-hold", "processing", "completed", "cancelled").forEach { s ->
+            val isCurrent = s == o.status
+            Surface(color = if (isCurrent) Green else Color(0xFFEFF4EC), shape = RoundedCornerShape(8.dp),
+              modifier = Modifier.clickable(enabled = !isCurrent) { onStatus(o, s) }) {
+              Text(s.replaceFirstChar { it.uppercase() }, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                color = if (isCurrent) Color.Black else Color(0xFF334038),
+                modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp))
+            }
+          }
+        }
       }
-      Spacer(Modifier.height(10.dp)); Row(verticalAlignment = Alignment.CenterVertically) {
+      Spacer(Modifier.height(10.dp))
+      Row(verticalAlignment = Alignment.CenterVertically) {
         Text("₦%,d".format(o.total.toLong()), fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Green, modifier = Modifier.weight(1f))
-        Text(if (exp) "Hide" else "Details", fontSize = 12.5.sp, color = Green, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { exp = !exp }) }
+        Text(if (exp) "Hide" else "Manage", fontSize = 12.5.sp, color = Green, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { exp = !exp })
+      }
     }
   }
+}
+
+@Composable fun SmallChip(label: String, onClick: () -> Unit) {
+  Surface(color = Color(0xFFEFF4EC), shape = RoundedCornerShape(8.dp), modifier = Modifier.clickable { onClick() }) {
+    Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF334038),
+      modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp))
+  }
+}
 
 @Composable fun Pill(s: String) {
   val bg = when (s) { "completed" -> Color(0xFFE4F7D6); "processing" -> Color(0xFFE3F0FF); "pending", "on-hold" -> Color(0xFFFFF4D6); else -> Color(0xFFFBE0DD) }
@@ -268,7 +391,7 @@ fun App(act: ComponentActivity) {
   Surface(color = bg, shape = RoundedCornerShape(999.dp)) { Text(s.uppercase(), color = fg, fontSize = 10.5.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)) }
 }
 
-@Composable fun Inventory(act: ComponentActivity, products: List<Product>, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
+@Composable fun Inventory(act: ComponentActivity, products: List<Product>, refreshing: Boolean = false, onRefresh: () -> Unit = {}, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
   var q by remember { mutableStateOf("") }
   var filter by remember { mutableStateOf(0) } // 0=all, 1=out, 2=low
   val ctx = LocalContext.current
@@ -286,7 +409,8 @@ fun App(act: ComponentActivity) {
     val opts = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8, Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E, Barcode.FORMAT_CODE_128, Barcode.FORMAT_QR_CODE).enableAutoZoom().build()
     GmsBarcodeScanning.getClient(ctx, opts).startScan().addOnSuccessListener { b -> b.rawValue?.let { q = it } }.addOnFailureListener {}
   } catch (_: Exception) {} }
-  Column(Modifier.padding(12.dp)) {
+  PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
+  Column(Modifier.fillMaxSize().padding(12.dp)) {
     Row(verticalAlignment = Alignment.CenterVertically) {
       OutlinedTextField(q, { q = it }, label = { Text("Search name or SKU") }, modifier = Modifier.weight(1f), singleLine = true,
         shape = RoundedCornerShape(12.dp), colors = OutlinedTextFieldDefaults.colors(cursorColor = Green, focusedBorderColor = Green, unfocusedBorderColor = Color(0xFF34493A), focusedLabelColor = Lime))
@@ -311,7 +435,8 @@ fun App(act: ComponentActivity) {
     Text("${products.count { it.manageStock }} of ${products.size} tracking stock  •  ${products.count { it.stockStatus == "outofstock" }} out of stock",
       fontSize = 11.sp, color = Color(0xFF6E7D72))
     Spacer(Modifier.height(8.dp))
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) { items(shown, key = { it.id }) { ProductRow(it, onUpdate) } }
+    LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(shown, key = { it.id }) { ProductRow(it, onUpdate) } }
+  }
   }
 }
 
