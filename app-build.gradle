@@ -2,16 +2,27 @@ plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android'; id 'c
 android {
   namespace 'ng.leafsolar.admin'
   compileSdk 34
-  defaultConfig { applicationId "ng.leafsolar.admin"; minSdk 24; targetSdk 34; versionCode 17; versionName "2.9" }
+  defaultConfig { applicationId "ng.leafsolar.admin"; minSdk 24; targetSdk 34; versionCode 18; versionName "3.0" }
   buildFeatures { compose true; buildConfig true }
   composeOptions { kotlinCompilerExtensionVersion '1.5.14' }
   compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
   kotlinOptions { jvmTarget='17' }
+  signingConfigs {
+    release {
+      storeFile file("upload-keystore.jks")
+      storePassword "leafsolar2026"
+      keyAlias "leafupload"
+      keyPassword "leafsolar2026"
+    }
+  }
   buildTypes {
     release {
       minifyEnabled false
-      // Signed with the debug key for sideload/distribution. For Play Store, re-sign with your upload key.
-      signingConfig signingConfigs.debug
+      signingConfig signingConfigs.release
+    }
+    debug {
+      // Sign debug with the SAME stable key so updates install without uninstalling.
+      signingConfig signingConfigs.release
     }
   }
 }
