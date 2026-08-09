@@ -1,4 +1,4 @@
-name: Build Debug APK
+name: Build App
 on:
   push:
     branches: [ main, master ]
@@ -21,10 +21,18 @@ jobs:
           cp colors.xml strings.xml themes.xml app/src/main/res/values/
           cp ic_leaf.xml app/src/main/res/drawable/
           cp ic_launcher.xml app/src/main/res/mipmap-anydpi-v26/
-      - name: Build
-        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+      - name: Build debug + release
+        run: chmod +x gradlew && ./gradlew assembleDebug assembleRelease bundleRelease --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: Leaf-Admin-APK
+          name: Leaf-Admin-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Leaf-Admin-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Leaf-Admin-release-aab
+          path: app/build/outputs/bundle/release/app-release.aab

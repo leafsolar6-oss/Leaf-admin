@@ -878,6 +878,10 @@ fun App(act: ComponentActivity) {
   var stockFilter by remember { mutableStateOf(0) }
   var category by remember { mutableStateOf("all") }
   var confirmBulk by remember { mutableStateOf<String?>(null) } // "outofstock" | "instock"
+  var selectMode by remember { mutableStateOf(false) }
+  val selected = remember { mutableStateListOf<Long>() }
+  fun toggleSel(id: Long) { if (id in selected) selected.remove(id) else selected.add(id) }
+  fun selIds(): List<Long> = selected.toList()
   val ctx = LocalContext.current
   val categories = remember(products) {
     val c = LinkedHashMap<String, Int>()
@@ -897,14 +901,17 @@ fun App(act: ComponentActivity) {
   } catch (_: Exception) {}
 
   confirmBulk?.let { target ->
+    val isSel = target == "outofstock-sel" || target == "instock-sel"
+    val realTarget = if (target.contains("outofstock")) "outofstock" else "instock"
+    val ids = if (isSel) selIds() else shown.map { it.id }
     AlertDialog(
       onDismissRequest = { confirmBulk = null },
-      title = { Text(if (target == "outofstock") "Mark all as out of stock?" else "Mark all as in stock?") },
-      text = { Text("This will update ${shown.size} product${if (shown.size==1) "" else "s"} currently shown (filtered by search/category/stock). It saves immediately and cannot be undone in bulk.") },
+      title = { Text(if (realTarget == "outofstock") "Mark out of stock?" else "Mark in stock?") },
+      text = { Text("This will update ${ids.size} product${if (ids.size==1) "" else "s"}${if (isSel) " selected" else " currently shown"}. It saves immediately.") },
       confirmButton = {
-        Button({ onBulkStock(shown.map { it.id }, target); confirmBulk = null },
-          colors = ButtonDefaults.buttonColors(containerColor = if (target=="outofstock") Danger else Green, contentColor = Color.White)) {
-          Text(if (target=="outofstock") "Mark out of stock" else "Mark in stock")
+        Button({ onBulkStock(ids, realTarget); confirmBulk = null; if (isSel) { selected.clear(); selectMode = false } },
+          colors = ButtonDefaults.buttonColors(containerColor = if (realTarget=="outofstock") Danger else Green, contentColor = Color.White)) {
+          Text(if (realTarget=="outofstock") "Mark out of stock" else "Mark in stock")
         }
       },
       dismissButton = { TextButton({ confirmBulk = null }) { Text("Cancel") } }
@@ -941,10 +948,32 @@ fun App(act: ComponentActivity) {
     }
     Spacer(Modifier.height(8.dp))
     // Bulk actions bar — acts on the currently filtered/shown products
+    if (selectMode) {
+      // Selection action bar
+      Surface(color = GreenDark, shadowElevation = 4.dp) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+          IconButton(onClick = { selected.clear(); selectMode = false }) { Icon(Icons.Default.Close, "Cancel", tint = Color.White) }
+          Text("${selected.size} selected", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f))
+          IconButton(onClick = {
+            val all = shown.map { it.id }.toSet()
+            if (selected.size == shown.size) selected.clear() else { selected.clear(); selected.addAll(all) }
+          }, enabled = shown.isNotEmpty()) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) }
+          IconButton(onClick = { onBulkTrack(selIds(), true) }, enabled = selected.isNotEmpty()) { Icon(Icons.Default.CheckCircle, "Track selected", tint = Color.White) }
+          IconButton(onClick = { onBulkTrack(selIds(), false) }, enabled = selected.isNotEmpty()) { Icon(Icons.Default.RadioButtonUnchecked, "Untrack selected", tint = Color.White) }
+          IconButton(onClick = { confirmBulk = "instock-sel" }, enabled = selected.isNotEmpty()) { Icon(Icons.Default.Inventory2, "Selected in stock", tint = Color.White) }
+          IconButton(onClick = { confirmBulk = "outofstock-sel" }, enabled = selected.isNotEmpty()) { Icon(Icons.Default.RemoveShoppingCart, "Selected out of stock", tint = Color.White) }
+        }
+      }
+    } else {
     Surface(color = Surface, shadowElevation = 2.dp) {
       Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
           Text("${shown.size} shown", fontSize = 12.sp, color = InkMuted, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+          OutlinedButton({ selectMode = true }, shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+            Icon(Icons.Default.CheckBox, "Select", modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(4.dp)); Text("Select", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+          }
+          Spacer(Modifier.width(8.dp))
           OutlinedButton({ onBulkTrack(shown.map { it.id }, false) }, enabled = shown.isNotEmpty(),
             shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
             Icon(Icons.Default.RadioButtonUnchecked, null, modifier = Modifier.size(15.dp))
@@ -975,17 +1004,21 @@ fun App(act: ComponentActivity) {
         }
       }
     }
+    }
     PullRefresh(false, onRefresh) {
       if (shown.isEmpty()) EmptyState("No products match")
       else LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(shown, key = { it.id }) { ProductRow(it, onUpdate, onPrice) }
+        items(shown, key = { it.id }) { ProductRow(it, onUpdate, onPrice, selectMode, it.id in selected, ::toggleSel) }
         item { Spacer(Modifier.height(60.dp)) }
       }
     }
   }
 }
 
-@Composable fun ProductRow(p: Product, onUpdate: (Product, Int?, Boolean?, String?) -> Unit, onPrice: (Product, Double, Double?) -> Unit) {
+@Composable fun ProductRow(
+  p: Product, onUpdate: (Product, Int?, Boolean?, String?) -> Unit, onPrice: (Product, Double, Double?) -> Unit,
+  selectMode: Boolean = false, selected: Boolean = false, onToggle: (Long) -> Unit = {}
+) {
   var priceDlg by remember(p.id) { mutableStateOf(false) }
   if (priceDlg) PriceEditorDialog(p, onDismiss = { priceDlg = false }, onSave = { reg, sale ->
     onPrice(p, reg, sale); priceDlg = false
@@ -1000,8 +1033,15 @@ fun App(act: ComponentActivity) {
     syncing = true
     onUpdate(p, qty, manage, status)
   }
-  SectionCard {
+  SectionCard(
+    border = if (selected) androidx.compose.foundation.BorderStroke(2.dp, Green) else null,
+    modifier = if (selectMode) Modifier.clickable { onToggle(p.id) } else Modifier
+  ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
+      if (selectMode) {
+        Checkbox(checked = selected, onCheckedChange = { onToggle(p.id) }, colors = CheckboxDefaults.colors(checkedColor = Green))
+        Spacer(Modifier.width(4.dp))
+      }
       // Thumbnail with corner out-of-stock badge
       Box {
         if (p.image.isNotBlank()) {
