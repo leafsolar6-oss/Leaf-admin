@@ -44,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -217,6 +218,22 @@ object Api {
   }
 
   suspend fun setStatus(id: Long, s: String) = withContext(Dispatchers.IO) { exec("orders/$id", "PUT", "{\"status\":\"$s\"}") }
+
+  suspend fun bulkTrack(ids: List<Long>, track: Boolean): Pair<Int,Int> = withContext(Dispatchers.IO) {
+    val payload = JSONObject().put("ids", JSONArray(ids)).put("track", track).toString()
+    val raw = execPath("https://leafsolar.ng/wp-json/lfx/v1/bulk-track", "POST", payload)
+    return@withContext try { val o=JSONObject(raw); o.optInt("updated",0) to o.optInt("failed",0) } catch (e:Exception){ 0 to ids.size }
+  }
+
+  suspend fun setPrice(id: Long, regular: Double?, sale: Double?): Boolean = withContext(Dispatchers.IO) {
+    val o = JSONObject()
+    if (regular != null) o.put("regular_price", regular)
+    if (sale != null) { if (sale < 0) o.put("sale_price", "") else o.put("sale_price", sale) }
+    return@withContext try {
+      val raw = execPath("https://leafsolar.ng/wp-json/lfx/v1/product/$id/price", "POST", o.toString())
+      JSONObject(raw).optBoolean("ok", false)
+    } catch (e: Exception) { false }
+  }
 }
 
 class MainActivity : ComponentActivity() {
@@ -508,6 +525,25 @@ fun App(act: ComponentActivity) {
       }
     }
 
+    val onBulkTrack: (List<Long>, Boolean) -> Unit = { ids, track ->
+      // optimistic
+      val target = ids.toHashSet()
+      for (i in products.indices) if (products[i].id in target) products[i] = products[i].copy(manageStock = track)
+      scope.launch {
+        val (ok, fail) = Api.bulkTrack(ids, track)
+        toast = if (fail==0) (if(track) "Tracking $ok product${if(ok==1)"" else "s"}" else "Untracked $ok product${if(ok==1)"" else "s"}") else "Done ($ok ok, $fail failed)"
+      }
+    }
+
+    val onPrice: (Product, Double, Double?) -> Unit = { p, regular, sale ->
+      // optimistic
+      mutateProduct(p.id) { it.copy(regularPrice = regular, salePrice = sale, price = sale ?: regular) }
+      scope.launch {
+        val ok = Api.setPrice(p.id, regular, sale)
+        if (ok) toast = "Price updated" else { toast = "Price update failed"; runCatching { products.replaceAll(Api.products()) } }
+      }
+    }
+
     MainScaffold(tab, { tab = it }, orders, products, refreshing, lastSync,
       onLogout = {
         val t = PushStore.getToken(ctx)
@@ -517,7 +553,9 @@ fun App(act: ComponentActivity) {
       onRefresh = { refresh() },
       onStatus = onStatus,
       onUpdate = onUpdate,
-      onBulkStock = onBulkStock
+      onBulkStock = onBulkStock,
+      onBulkTrack = onBulkTrack,
+      onPrice = onPrice
     )
   }
 }
@@ -525,6 +563,7 @@ fun App(act: ComponentActivity) {
 // ---------- Login ----------
 @Composable fun LoginScreen(user: String?, pass: String?, onUser: (String) -> Unit, onPass: (String) -> Unit,
   err: String?, loading: Boolean, onLogin: () -> Unit) {
+  var showPass by remember { mutableStateOf(false) }
   Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF0E1B12), GreenDark, Green)))) {
     Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
       Text("🌿 Leaf Admin", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.ExtraBold)
@@ -537,9 +576,17 @@ fun App(act: ComponentActivity) {
             modifier = Modifier.fillMaxWidth(), singleLine = true,
             shape = RoundedCornerShape(12.dp))
           Spacer(Modifier.height(12.dp))
-          OutlinedTextField(pass ?: "", onPass, label = { Text("Application password") },
-            visualTransformation = PasswordVisualTransformation(), singleLine = true,
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+          OutlinedTextField(
+            value = pass ?: "", onValueChange = onPass, label = { Text("Application password") },
+            singleLine = true,
+            visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, keyboardType = KeyboardType.Password),
+            trailingIcon = {
+              IconButton(onClick = { showPass = !showPass }) {
+                Icon(if (showPass) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                  if (showPass) "Hide password" else "Show password", tint = InkMuted)
+              }
+            },
             modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
           err?.let { Spacer(Modifier.height(8.dp)); Text(it, color = Danger, fontSize = 13.sp) }
           Spacer(Modifier.height(16.dp))
@@ -565,7 +612,9 @@ fun App(act: ComponentActivity) {
   onLogout: () -> Unit, onRefresh: () -> Unit,
   onStatus: (Order, String) -> Unit,
   onUpdate: (Product, Int?, Boolean?, String?) -> Unit,
-  onBulkStock: (List<Long>, String) -> Unit
+  onBulkStock: (List<Long>, String) -> Unit,
+  onBulkTrack: (List<Long>, Boolean) -> Unit,
+  onPrice: (Product, Double, Double?) -> Unit
 ) {
   val pending = orders.count { it.status == "pending" || it.status == "on-hold" }
   val titles = listOf("Dashboard", "Orders", "Inventory")
@@ -582,6 +631,7 @@ fun App(act: ComponentActivity) {
             }
             if (refreshing) CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(20.dp), color = Green)
             else IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh", tint = InkMuted) }
+            IconButton(onClick = onLogout) { Icon(Icons.Default.Logout, "Logout", tint = InkMuted) }
           }
         }
       }
@@ -611,7 +661,7 @@ fun App(act: ComponentActivity) {
       when (tab) {
         0 -> DashboardScreen(orders, products, onRefresh)
         1 -> OrdersScreen(orders, onRefresh, onStatus)
-        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock)
+        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice)
       }
     }
   }
@@ -820,7 +870,9 @@ fun App(act: ComponentActivity) {
 @Composable fun InventoryScreen(
   products: List<Product>, onRefresh: () -> Unit,
   onUpdate: (Product, Int?, Boolean?, String?) -> Unit,
-  onBulkStock: (List<Long>, String) -> Unit
+  onBulkStock: (List<Long>, String) -> Unit,
+  onBulkTrack: (List<Long>, Boolean) -> Unit,
+  onPrice: (Product, Double, Double?) -> Unit
 ) {
   var q by remember { mutableStateOf("") }
   var stockFilter by remember { mutableStateOf(0) }
@@ -890,33 +942,54 @@ fun App(act: ComponentActivity) {
     Spacer(Modifier.height(8.dp))
     // Bulk actions bar — acts on the currently filtered/shown products
     Surface(color = Surface, shadowElevation = 2.dp) {
-      Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("${shown.size} shown", fontSize = 12.sp, color = InkMuted, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-        OutlinedButton({ confirmBulk = "instock" }, enabled = shown.isNotEmpty(),
-          shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
-          Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(16.dp))
-          Spacer(Modifier.width(4.dp)); Text("All in stock", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+      Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Text("${shown.size} shown", fontSize = 12.sp, color = InkMuted, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+          OutlinedButton({ onBulkTrack(shown.map { it.id }, false) }, enabled = shown.isNotEmpty(),
+            shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+            Icon(Icons.Default.RadioButtonUnchecked, null, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(4.dp)); Text("Untrack all", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+          }
+          Spacer(Modifier.width(8.dp))
+          Button({ onBulkTrack(shown.map { it.id }, true) }, enabled = shown.isNotEmpty(), shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = GreenDark, contentColor = Color.White),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+            Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(4.dp)); Text("Track all", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+          }
         }
-        Spacer(Modifier.width(8.dp))
-        Button({ confirmBulk = "outofstock" }, enabled = shown.isNotEmpty(), shape = RoundedCornerShape(10.dp),
-          colors = ButtonDefaults.buttonColors(containerColor = Danger, contentColor = Color.White),
-          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
-          Icon(Icons.Default.RemoveShoppingCart, null, modifier = Modifier.size(16.dp))
-          Spacer(Modifier.width(4.dp)); Text("All out of stock", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          OutlinedButton({ confirmBulk = "instock" }, enabled = shown.isNotEmpty(), modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+            Icon(Icons.Default.Inventory2, null, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(4.dp)); Text("All in stock", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+          }
+          Spacer(Modifier.width(8.dp))
+          Button({ confirmBulk = "outofstock" }, enabled = shown.isNotEmpty(), modifier = Modifier.weight(1f), shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Danger, contentColor = Color.White),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+            Icon(Icons.Default.RemoveShoppingCart, null, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(4.dp)); Text("All out of stock", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+          }
         }
       }
     }
     PullRefresh(false, onRefresh) {
       if (shown.isEmpty()) EmptyState("No products match")
       else LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(shown, key = { it.id }) { ProductRow(it, onUpdate) }
+        items(shown, key = { it.id }) { ProductRow(it, onUpdate, onPrice) }
         item { Spacer(Modifier.height(60.dp)) }
       }
     }
   }
 }
 
-@Composable fun ProductRow(p: Product, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
+@Composable fun ProductRow(p: Product, onUpdate: (Product, Int?, Boolean?, String?) -> Unit, onPrice: (Product, Double, Double?) -> Unit) {
+  var priceDlg by remember(p.id) { mutableStateOf(false) }
+  if (priceDlg) PriceEditorDialog(p, onDismiss = { priceDlg = false }, onSave = { reg, sale ->
+    onPrice(p, reg, sale); priceDlg = false
+  })
   var qty by remember(p.id) { mutableStateOf((p.stockQty ?: 0).toString()) }
   var syncing by remember(p.id) { mutableStateOf(false) }
   val out = p.stockStatus == "outofstock"
@@ -953,6 +1026,9 @@ fun App(act: ComponentActivity) {
         Spacer(Modifier.height(3.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
           Text(money(p.price), fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Green)
+          IconButton(onClick = { priceDlg = true }, modifier = Modifier.size(28.dp)) {
+            Icon(Icons.Default.Edit, "Edit price", tint = InkMuted, modifier = Modifier.size(16.dp))
+          }
           if (p.salePrice != null && p.regularPrice > p.price) {
             Spacer(Modifier.width(6.dp))
             Text(money(p.regularPrice), fontSize = 11.sp, color = InkMuted, textDecoration = TextDecoration.LineThrough)
@@ -1005,6 +1081,43 @@ fun App(act: ComponentActivity) {
       Text(if (out) "Mark in stock" else "Mark out of stock", fontWeight = FontWeight.Bold, fontSize = 13.sp)
     }
   }
+}
+
+@Composable fun PriceEditorDialog(p: Product, onDismiss: () -> Unit, onSave: (Double, Double?) -> Unit) {
+  // Show naira without separators for easy editing
+  var reg by remember(p.id) { mutableStateOf(if (p.regularPrice > 0) "%.0f".format(p.regularPrice) else "%.0f".format(p.price)) }
+  var sale by remember(p.id) { mutableStateOf(p.salePrice?.let { "%.0f".format(it) } ?: "") }
+  var err by remember { mutableStateOf<String?>(null) }
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("Edit price", fontWeight = FontWeight.Bold) },
+    text = {
+      Column {
+        Text(p.name, fontSize = 12.sp, color = InkMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(reg, { reg = it.filter { c -> c.isDigit() }; err = null },
+          label = { Text("Regular price (₦)") }, singleLine = true,
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+          prefix = { Text("₦ ") }, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(sale, { sale = it.filter { c -> c.isDigit() }; err = null },
+          label = { Text("Sale price (₦, optional)") }, singleLine = true,
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+          prefix = { Text("₦ ") }, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth())
+        err?.let { Spacer(Modifier.height(6.dp)); Text(it, color = Danger, fontSize = 12.sp) }
+      }
+    },
+    confirmButton = {
+      Button({
+        val r = reg.toDoubleOrNull()
+        if (r == null || r < 0) { err = "Enter a valid price"; return@Button }
+        val sa = sale.toDoubleOrNull()
+        if (sa != null && sa >= r) { err = "Sale price must be lower"; return@Button }
+        onSave(r, sa)
+      }, colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Color.White)) { Text("Save") }
+    },
+    dismissButton = { TextButton(onDismiss) { Text("Cancel") } }
+  )
 }
 
 @Composable fun FilterPill(label: String, count: Int, active: Boolean, onClick: () -> Unit) {
