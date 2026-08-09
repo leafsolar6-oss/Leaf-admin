@@ -143,7 +143,6 @@ fun App(act: ComponentActivity) {
   var toast by remember { mutableStateOf<String?>(null) }
   val scope = rememberCoroutineScope()
   val ctx = act.applicationContext
-  Fcm.init(ctx)
 
   // Notification permission (Android 13+)
   val notifPermission = rememberLauncherForActivityResult(
@@ -159,7 +158,7 @@ fun App(act: ComponentActivity) {
 
   // Register this device for new-order push notifications.
   fun registerPush() {
-    if (!Fcm.available(ctx)) return
+    if (!Fcm.available()) return
     Fcm.token { token ->
       if (token != null) {
         PushStore.saveToken(ctx, token)

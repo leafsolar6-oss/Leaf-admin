@@ -1,8 +1,8 @@
-plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android'; id 'com.google.gms.google-services' }
 android {
   namespace 'ng.leafsolar.admin'
   compileSdk 34
-  defaultConfig { applicationId "ng.leafsolar.admin"; minSdk 24; targetSdk 34; versionCode 6; versionName "1.5" }
+  defaultConfig { applicationId "ng.leafsolar.admin"; minSdk 24; targetSdk 34; versionCode 7; versionName "1.6" }
   buildFeatures { compose true; buildConfig true }
   composeOptions { kotlinCompilerExtensionVersion '1.5.14' }
   compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }

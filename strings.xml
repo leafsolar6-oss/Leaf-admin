@@ -1,11 +1,12 @@
 <resources>
     <string name="app_name">Leaf Admin</string>
-    <!-- Firebase Cloud Messaging.
-         Replace these two values after creating the Firebase project at
-         https://console.firebase.google.com  (Project settings → Cloud Messaging / General).
-         The app still runs without them; push just won't register until filled. -->
-    <string name="fcm_sender_id" translatable="false">REPLACE_WITH_FIREBASE_SENDER_ID</string>
-    <string name="fcm_project_id" translatable="false">REPLACE_WITH_FIREBASE_PROJECT_ID</string>
-    <string name="fcm_app_id" translatable="false">REPLACE_WITH_FIREBASE_APP_ID</string>
-    <string name="fcm_api_key" translatable="false">REPLACE_WITH_FIREBASE_API_KEY</string>
+    <!-- Firebase Cloud Messaging (from google-services.json) -->
+    <string name="fcm_sender_id" translatable="false">665877212563</string>
+    <string name="fcm_project_id" translatable="false">leaf-solar</string>
+    <string name="fcm_app_id" translatable="false">1:665877212563:android:de55e1936102c493904c66</string>
+    <string name="fcm_api_key" translatable="false">AIzaSyBGs8d4b7UdzWzKfhs98SsGOAQ8QPOpMA8</string>
+    <string name="google_app_id" translatable="false">1:665877212563:android:de55e1936102c493904c66</string>
+    <string name="gcm_defaultSenderId" translatable="false">665877212563</string>
+    <string name="google_storage_bucket" translatable="false">leaf-solar.firebasestorage.app</string>
+    <string name="default_web_client_id" translatable="false"></string>
 </resources>

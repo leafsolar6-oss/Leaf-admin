@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "665877212563",
+    "project_id": "leaf-solar",
+    "storage_bucket": "leaf-solar.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:665877212563:android:de55e1936102c493904c66",
+        "android_client_info": {
+          "package_name": "ng.leafsolar.admin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBGs8d4b7UdzWzKfhs98SsGOAQ8QPOpMA8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
