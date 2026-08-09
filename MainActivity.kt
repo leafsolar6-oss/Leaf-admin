@@ -95,7 +95,7 @@ data class Order(val id: Long, val number: String, val name: String, val phone: 
 data class Product(val id: Long, val name: String, val sku: String, val price: Double,
                    val manageStock: Boolean, val stockQty: Int?, val stockStatus: String,
                    val categories: List<String>, val image: String, val type: String,
-                   val regularPrice: Double, val salePrice: Double?)
+                   val regularPrice: Double, val salePrice: Double?, val reorderPoint: Int? = null)
 
 object Api {
   private val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
@@ -151,7 +151,7 @@ object Api {
 
   suspend fun products(): List<Product> = withContext(Dispatchers.IO) {
     // Fetch page 1 first to learn total pages, then fetch remaining in parallel.
-    val f = "_fields=id,name,sku,price,regular_price,sale_price,manage_stock,stock_quantity,stock_status,categories,images,type"
+    val f = "_fields=id,name,sku,price,regular_price,sale_price,manage_stock,stock_quantity,stock_status,categories,images,type,reorder_point"
     val first = exec("products?per_page=100&page=1&status=publish&orderby=title&order=asc&$f")
     val firstArr = JSONArray(first)
     if (firstArr.length() == 0) return@withContext emptyList()
@@ -182,7 +182,8 @@ object Api {
         o.optDouble("price", 0.0), o.optBoolean("manage_stock"),
         if (o.isNull("stock_quantity")) null else o.optInt("stock_quantity"),
         o.optString("stock_status", "instock"), cats, o.optString("image"),
-        o.optString("type", "simple"), o.optDouble("regular_price", 0.0), sale)
+        o.optString("type", "simple"), o.optDouble("regular_price", 0.0), sale,
+        if (o.isNull("reorder_point")) null else o.optInt("reorder_point"))
     } catch (e: Exception) { null }
   }
 
@@ -223,6 +224,15 @@ object Api {
     val payload = JSONObject().put("ids", JSONArray(ids)).put("track", track).toString()
     val raw = execPath("https://leafsolar.ng/wp-json/lfx/v1/bulk-track", "POST", payload)
     return@withContext try { val o=JSONObject(raw); o.optInt("updated",0) to o.optInt("failed",0) } catch (e:Exception){ 0 to ids.size }
+  }
+
+  suspend fun setReorder(id: Long, point: Int?): Boolean = withContext(Dispatchers.IO) {
+    val o = JSONObject().apply { if (point == null) put("reorder_point", "") else put("reorder_point", point) }
+    return@withContext try { JSONObject(execPath("https://leafsolar.ng/wp-json/lfx/v1/product/$id/reorder","POST",o.toString())).optBoolean("ok",false) } catch(e:Exception){ false }
+  }
+  suspend fun bulkReorder(ids: List<Long>, point: Int): Int = withContext(Dispatchers.IO) {
+    val o = JSONObject().put("ids", JSONArray(ids)).put("reorder_point", point)
+    return@withContext try { JSONObject(execPath("https://leafsolar.ng/wp-json/lfx/v1/bulk-reorder","POST",o.toString())).optInt("updated",0) } catch(e:Exception){ 0 }
   }
 
   suspend fun setPrice(id: Long, regular: Double?, sale: Double?): Boolean = withContext(Dispatchers.IO) {
@@ -339,6 +349,7 @@ object LocalCache {
       put("stockStatus", p.stockStatus); put("image", p.image); put("type", p.type)
       put("regularPrice", p.regularPrice)
       if (p.salePrice != null) put("salePrice", p.salePrice) else put("salePrice", JSONObject.NULL)
+      if (p.reorderPoint != null) put("reorderPoint", p.reorderPoint) else put("reorderPoint", JSONObject.NULL)
       put("categories", JSONArray(p.categories))
     }) }
   }.toString()
@@ -350,7 +361,8 @@ object LocalCache {
       out.add(Product(p.getLong("id"), p.optString("name"), p.optString("sku"), p.optDouble("price",0.0),
         p.optBoolean("manageStock"), if (p.isNull("stockQty")) null else p.optInt("stockQty"),
         p.optString("stockStatus","instock"), cats, p.optString("image"), p.optString("type","simple"),
-        p.optDouble("regularPrice",0.0), if (p.isNull("salePrice")) null else p.optDouble("salePrice",0.0)))
+        p.optDouble("regularPrice",0.0), if (p.isNull("salePrice")) null else p.optDouble("salePrice",0.0),
+        if (p.isNull("reorderPoint")) null else p.optInt("reorderPoint")))
     }
     return out
   }
@@ -544,6 +556,14 @@ fun App(act: ComponentActivity) {
       }
     }
 
+    val onReorder: (Product, Int?) -> Unit = { p, point ->
+      mutateProduct(p.id) { it.copy(reorderPoint = point) }
+      scope.launch {
+        val ok = Api.setReorder(p.id, point)
+        if (!ok) { toast = "Could not save reorder point"; runCatching { Api.product(p.id)?.let { fresh -> mutateProduct(p.id){fresh} } } }
+      }
+    }
+
     MainScaffold(tab, { tab = it }, orders, products, refreshing, lastSync,
       onLogout = {
         val t = PushStore.getToken(ctx)
@@ -555,7 +575,8 @@ fun App(act: ComponentActivity) {
       onUpdate = onUpdate,
       onBulkStock = onBulkStock,
       onBulkTrack = onBulkTrack,
-      onPrice = onPrice
+      onPrice = onPrice,
+      onReorder = onReorder
     )
   }
 }
@@ -614,7 +635,8 @@ fun App(act: ComponentActivity) {
   onUpdate: (Product, Int?, Boolean?, String?) -> Unit,
   onBulkStock: (List<Long>, String) -> Unit,
   onBulkTrack: (List<Long>, Boolean) -> Unit,
-  onPrice: (Product, Double, Double?) -> Unit
+  onPrice: (Product, Double, Double?) -> Unit,
+  onReorder: (Product, Int?) -> Unit
 ) {
   val pending = orders.count { it.status == "pending" || it.status == "on-hold" }
   val titles = listOf("Dashboard", "Orders", "Inventory")
@@ -661,7 +683,7 @@ fun App(act: ComponentActivity) {
       when (tab) {
         0 -> DashboardScreen(orders, products, onRefresh)
         1 -> OrdersScreen(orders, onRefresh, onStatus)
-        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice)
+        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder)
       }
     }
   }
@@ -708,7 +730,7 @@ fun App(act: ComponentActivity) {
   val pending = orders.count { it.status == "pending" || it.status == "on-hold" }
   val done = orders.count { it.status == "completed" }
   val out = products.count { it.stockStatus == "outofstock" }
-  val low = products.count { it.manageStock && (it.stockQty ?: 0) in 1..5 }
+  val low = products.count { it.reorderPoint != null && (it.stockQty ?: 0) < (it.reorderPoint ?: 0) }
   val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
   val todays = orders.count { it.date.startsWith(today) }
   PullRefresh(false, onRefresh) {
@@ -879,7 +901,8 @@ fun App(act: ComponentActivity) {
   onUpdate: (Product, Int?, Boolean?, String?) -> Unit,
   onBulkStock: (List<Long>, String) -> Unit,
   onBulkTrack: (List<Long>, Boolean) -> Unit,
-  onPrice: (Product, Double, Double?) -> Unit
+  onPrice: (Product, Double, Double?) -> Unit,
+  onReorder: (Product, Int?) -> Unit
 ) {
   var q by remember { mutableStateOf("") }
   var stockFilter by remember { mutableStateOf(0) }
@@ -898,7 +921,12 @@ fun App(act: ComponentActivity) {
   val shown = remember(products, q, stockFilter, category) {
     products.filter { p ->
       (q.isBlank() || p.name.contains(q, true) || p.sku.contains(q, true)) &&
-      when (stockFilter) { 1 -> p.stockStatus == "outofstock"; 2 -> p.manageStock && (p.stockQty ?: 0) in 1..5; else -> true } &&
+      when (stockFilter) {
+        1 -> p.stockStatus == "outofstock"
+        2 -> p.manageStock && p.reorderPoint != null && (p.stockQty ?: 0) <= (p.reorderPoint ?: 0)
+        3 -> p.reorderPoint != null && (p.stockQty ?: 0) < (p.reorderPoint ?: 0)
+        else -> true
+      } &&
       when (category) { "all" -> true; "Uncategorized" -> p.categories.isEmpty(); else -> p.categories.contains(category) }
     }
   }
@@ -943,7 +971,7 @@ fun App(act: ComponentActivity) {
     }
     Spacer(Modifier.height(6.dp))
     Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-      listOf("All" to 0, "Out of stock" to 1, "Low stock" to 2).forEach { (l, i) ->
+      listOf("All" to 0, "Out of stock" to 1, "Low stock" to 2, "Reorder" to 3).forEach { (l, i) ->
         val a = stockFilter == i
         Surface(color = if (a) Green else Surface, shape = RoundedCornerShape(999.dp),
           border = if (a) null else androidx.compose.foundation.BorderStroke(1.dp, Line),
@@ -1015,7 +1043,7 @@ fun App(act: ComponentActivity) {
     PullRefresh(false, onRefresh) {
       if (shown.isEmpty()) EmptyState("No products match")
       else LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(shown, key = { it.id }) { ProductRow(it, onUpdate, onPrice, selectMode, it.id in selected, ::toggleSel) }
+        items(shown, key = { it.id }) { ProductRow(it, onUpdate, onPrice, onReorder, selectMode, it.id in selected, ::toggleSel) }
         item { Spacer(Modifier.height(60.dp)) }
       }
     }
@@ -1024,8 +1052,11 @@ fun App(act: ComponentActivity) {
 
 @Composable fun ProductRow(
   p: Product, onUpdate: (Product, Int?, Boolean?, String?) -> Unit, onPrice: (Product, Double, Double?) -> Unit,
+  onReorder: (Product, Int?) -> Unit,
   selectMode: Boolean = false, selected: Boolean = false, onToggle: (Long) -> Unit = {}
 ) {
+  var reorderDlg by remember(p.id) { mutableStateOf(false) }
+  if (reorderDlg) ReorderDialog(p, onDismiss = { reorderDlg = false }, onSave = { pt -> onReorder(p, pt); reorderDlg = false })
   var priceDlg by remember(p.id) { mutableStateOf(false) }
   if (priceDlg) PriceEditorDialog(p, onDismiss = { priceDlg = false }, onSave = { reg, sale ->
     onPrice(p, reg, sale); priceDlg = false
@@ -1075,6 +1106,9 @@ fun App(act: ComponentActivity) {
           Text(money(p.price), fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Green)
           IconButton(onClick = { priceDlg = true }, modifier = Modifier.size(28.dp)) {
             Icon(Icons.Default.Edit, "Edit price", tint = InkMuted, modifier = Modifier.size(16.dp))
+          }
+          IconButton(onClick = { reorderDlg = true }, modifier = Modifier.size(28.dp)) {
+            Icon(Icons.Default.NotificationsActive, "Reorder point", tint = if (p.reorderPoint != null && (p.stockQty ?: 0) < p.reorderPoint) Warn else InkMuted, modifier = Modifier.size(16.dp))
           }
           if (p.salePrice != null && p.regularPrice > p.price) {
             Spacer(Modifier.width(6.dp))
@@ -1128,6 +1162,27 @@ fun App(act: ComponentActivity) {
       Text(if (out) "Mark in stock" else "Mark out of stock", fontWeight = FontWeight.Bold, fontSize = 13.sp)
     }
   }
+}
+
+@Composable fun ReorderDialog(p: Product, onDismiss: () -> Unit, onSave: (Int?) -> Unit) {
+  var v by remember(p.id) { mutableStateOf(p.reorderPoint?.toString() ?: "") }
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("Reorder point", fontWeight = FontWeight.Bold) },
+    text = {
+      Column {
+        Text(p.name, fontSize = 12.sp, color = InkMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(8.dp))
+        Text("Get alerted when stock drops to or below this number.", fontSize = 12.sp, color = InkMuted)
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(v, { v = it.filter { c -> c.isDigit() } }, label = { Text("Minimum stock") },
+          singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+          shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth())
+      }
+    },
+    confirmButton = { Button({ onSave(v.toIntOrNull()) }, colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Color.White)) { Text("Save") } },
+    dismissButton = { TextButton(onDismiss) { Text("Cancel") } }
+  )
 }
 
 @Composable fun PriceEditorDialog(p: Product, onDismiss: () -> Unit, onSave: (Double, Double?) -> Unit) {
