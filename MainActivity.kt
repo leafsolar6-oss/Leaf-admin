@@ -25,7 +25,10 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -37,8 +40,10 @@ val Lime = Color(0xFFA6F25A)
 val Dark = Color(0xFF0A0D0B)
 val LightBg = Color(0xFFF6FAF3)
 
-data class Order(val id:Long,val number:String,val name:String,val phone:String,val email:String,val items:List<String>,val total:Double,val status:String,val date:String)
-data class Product(val id:Long,val name:String,val sku:String,val price:Double,val manageStock:Boolean,val stockQty:Int?,val type:String)
+data class Order(val id:Long,val number:String,val name:String,val phone:String,val email:String,
+                val items:List<String>,val total:Double,val status:String,val date:String)
+data class Product(val id:Long,val name:String,val sku:String,val price:Double,
+                   val manageStock:Boolean,val stockQty:Int?,val type:String)
 
 object Api {
   private val client = OkHttpClient()
@@ -47,11 +52,11 @@ object Api {
   fun setAuth(u:String,p:String){ auth = Credentials.basic(u.trim(),p.trim()) }
   private fun exec(path:String,method:String="GET",bodyJson:String?=null):String{
     val b=Request.Builder().url(base+path).header("Authorization",auth)
-    if(bodyJson!=null) b.method(method, RequestBody.create(MediaType.parse("application/json"),bodyJson))
+    if(bodyJson!=null) b.method(method, bodyJson.toRequestBody("application/json".toMediaTypeOrNull()!!))
     else b.method(method,null)
     client.newCall(b.build()).execute().use{r->
-      if(!r.isSuccessful) throw IOException("HTTP ${r.code()}")
-      return r.body()?.string()?:""
+      if(!r.isSuccessful) throw IOException("HTTP ${r.code} on $path")
+      return r.body?.string()?:""
     }
   }
   suspend fun orders():List<Order> = withContext(Dispatchers.IO){
@@ -100,15 +105,13 @@ class MainActivity:ComponentActivity(){
   var tab by remember{mutableStateOf(0)}
   var orders by remember{mutableStateOf<List<Order>>(emptyList())}
   var products by remember{mutableStateOf<List<Product>>(emptyList())}
-  LaunchedEffect(Unit){
-    val u=prefs.getString("u",null); val p=prefs.getString("p",null)
-    if(u!=null&&p!=null){Api.setAuth(u,p);user=u;pass=p;logged=true}
-  }
+  LaunchedEffect(Unit){ val u=prefs.getString("u",null); val p=prefs.getString("p",null)
+    if(u!=null&&p!=null){Api.setAuth(u,p);user=u;pass=p;logged=true} }
   LaunchedEffect(logged){ if(logged){ try{orders=Api.orders();products=Api.products()}catch(_:Exception){} } }
   if(!logged){
     Column(Modifier.fillMaxSize().background(Dark).padding(24.dp),verticalArrangement=Arrangement.Center){
       Text("Leaf Admin",color=Lime,fontSize=30.sp,fontWeight=FontWeight.ExtraBold)
-      Spacer(Modifier.height(6.dp));Text("Inventory & orders",color=Color(0xFFB9C7BD),fontSize=15.sp)
+      Spacer(Modifier.height(6.dp)); Text("Inventory & orders",color=Color(0xFFB9C7BD),fontSize=15.sp)
       Spacer(Modifier.height(28.dp))
       OutlinedTextField(user?:"",{user=it;err=null},label={Text("Username or email")},modifier=Modifier.fillMaxWidth(),colors=fieldColors())
       Spacer(Modifier.height(12.dp))
@@ -121,7 +124,8 @@ class MainActivity:ComponentActivity(){
         loading=true;err=null
         Thread{ try{Api.setAuth(user!!,pass!!);Api.orders();prefs.edit().putString("u",user).putString("p",pass).apply();logged=true}
           catch(e:Exception){err="Login failed: ${e.message}"}; loading=false }.start()
-      },Modifier.fillMaxWidth().height(52.dp),colors=ButtonDefaults.buttonColors(containerColor=Green,contentColor=Color.Black),shape=RoundedCornerShape(12.dp),enabled=!loading){
+      },Modifier.fillMaxWidth().height(52.dp),colors=ButtonDefaults.buttonColors(containerColor=Green,contentColor=Color.Black),
+        shape=RoundedCornerShape(12.dp),enabled=!loading){
         Text(if(loading)"Signing in…" else "Sign in",fontWeight=FontWeight.Bold,fontSize=16.sp)
       }
       Spacer(Modifier.height(14.dp));Text("Stored only on this device.",color=Color(0xFF8AA092),fontSize=12.sp)
@@ -137,21 +141,26 @@ class MainActivity:ComponentActivity(){
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
           listOf("Dashboard" to 0,"Orders" to 1,"Inventory" to 2).forEach{(t,i)->
             Surface(color=if(tab==i)Green else Color(0xFF1C2A20),shape=RoundedCornerShape(10.dp),modifier=Modifier.clickable{tab=i}){
-              Text(t,color=if(tab==i)Color.Black else Color.White,fontWeight=FontWeight.Bold,fontSize=13.sp,modifier=Modifier.padding(horizontal=14.dp,vertical=8.dp))
+              Text(t,color=if(tab==i)Color.Black else Color.White,fontWeight=FontWeight.Bold,fontSize=13.sp,
+                modifier=Modifier.padding(horizontal=14.dp,vertical=8.dp))
             }
           }
         }
       }}
     }){pad->Box(Modifier.padding(pad)){
       when(tab){ 0->Dashboard(orders,products);
-        1->Orders(orders){o,s->Thread{try{Api.setStatus(o.id,s);orders=Api.orders()}catch(_:Exception){}}.start()};
-        else->Inventory(products){p,q->Thread{try{Api.setStock(p.id,q);products=Api.products()}catch(_:Exception){}}.start()} }
+        1->Orders(orders){o,s-> kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.Main){
+          try{Api.setStatus(o.id,s);orders=Api.orders()}catch(_:Exception){} } };
+        else-> Inventory(act,products){p,q-> kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.Main){
+          try{Api.setStock(p.id,q);products=Api.products()}catch(_:Exception){} } } }
+      }
     }}
   }
 }
 @Composable fun fieldColors()=OutlinedTextFieldDefaults.colors(
   focusedTextColor=Color.White,unfocusedTextColor=Color.White,focusedLabelColor=Lime,unfocusedLabelColor=Color(0xFF8AA092),
   focusedBorderColor=Lime,unfocusedBorderColor=Color(0xFF34493A),cursorBrush=androidx.compose.ui.graphics.SolidColor(Lime))
+
 
 @Composable fun Dashboard(orders:List<Order>,products:List<Product>){
   val rev=orders.filter{it.status in listOf("processing","completed")}.sumOf{it.total}
@@ -192,8 +201,8 @@ class MainActivity:ComponentActivity(){
       Spacer(Modifier.height(10.dp));Text("Change status",fontSize=12.sp,fontWeight=FontWeight.Bold);Spacer(Modifier.height(6.dp))
       Row(horizontalArrangement=Arrangement.spacedBy(6.dp)){listOf("pending","on-hold","processing","completed","cancelled").forEach{s->
         Surface(color=if(s==o.status)Green else Color(0xFFEFF4EC),shape=RoundedCornerShape(8.dp),modifier=Modifier.clickable{onStatus(o,s)}){
-          Text(s.take(4).replaceFirstChar{it.uppercase()},fontSize=10.5.sp,fontWeight=FontWeight.Bold,color=if(s==o.status)Color.Black else Color(0xFF334038),
-            modifier=Modifier.padding(horizontal=9.dp,vertical=7.dp))}}}}
+          Text(s.take(4).replaceFirstChar{it.uppercase()},fontSize=10.5.sp,fontWeight=FontWeight.Bold,
+            color=if(s==o.status)Color.Black else Color(0xFF334038),modifier=Modifier.padding(horizontal=9.dp,vertical=7.dp))}}}}
     Spacer(Modifier.height(10.dp));Row(verticalAlignment=Alignment.CenterVertically){
       Text("₦%,d".format(o.total.toLong()),fontWeight=FontWeight.ExtraBold,fontSize=16.sp,color=Green,modifier=Modifier.weight(1f))
       Text(if(exp)"Hide" else "Details",fontSize=12.5.sp,color=Green,fontWeight=FontWeight.Bold,modifier=Modifier.clickable{exp=!exp})}
@@ -205,7 +214,7 @@ class MainActivity:ComponentActivity(){
   Surface(color=bg,shape=RoundedCornerShape(999.dp)){Text(s.uppercase(),color=fg,fontSize=10.5.sp,fontWeight=FontWeight.ExtraBold,modifier=Modifier.padding(horizontal=10.dp,vertical=5.dp))}
 }
 
-@Composable fun Inventory(products:List<Product>,onSave:(Product,Int)->Unit){
+@Composable fun Inventory(act:ComponentActivity,products:List<Product>,onSave:(Product,Int)->Unit){
   var q by remember{mutableStateOf("")}
   val ctx=LocalContext.current
   val shown=remember(products,q){products.filter{q.isBlank()||it.name.contains(q,true)||it.sku.contains(q,true)}}
@@ -218,7 +227,8 @@ class MainActivity:ComponentActivity(){
       OutlinedTextField(q,{q=it},label={Text("Search / SKU")},modifier=Modifier.weight(1f),singleLine=true,
         shape=RoundedCornerShape(12.dp),colors=OutlinedTextFieldDefaults.colors(focusedBorderColor=Green,cursorBrush=androidx.compose.ui.graphics.SolidColor(Green)))
       Spacer(Modifier.width(8.dp))
-      Button({scan()},colors=ButtonDefaults.buttonColors(containerColor=Dark,contentColor=Lime),contentPadding=PaddingValues(horizontal=14.dp,vertical=14.dp),shape=RoundedCornerShape(12.dp)){Text("Scan",fontSize=12.sp,fontWeight=FontWeight.Bold)}
+      Button({scan()},colors=ButtonDefaults.buttonColors(containerColor=Dark,contentColor=Lime),
+        contentPadding=PaddingValues(horizontal=14.dp,vertical=14.dp),shape=RoundedCornerShape(12.dp)){Text("Scan",fontSize=12.sp,fontWeight=FontWeight.Bold)}
     }
     Spacer(Modifier.height(6.dp));Text("${products.count{it.manageStock}} of ${products.size} products track stock.",fontSize=11.5.sp,color=Color(0xFF6E7D72));Spacer(Modifier.height(8.dp))
     LazyColumn(verticalArrangement=Arrangement.spacedBy(8.dp)){items(shown,key={it.id}){ProductRow(it,onSave)}}
@@ -236,8 +246,10 @@ class MainActivity:ComponentActivity(){
       OutlinedTextField(qty,{qty=it.filter{c->c.isDigit()};saved=false},modifier=Modifier.width(86.dp),singleLine=true,
         textStyle=androidx.compose.ui.text.TextStyle(fontSize=14.sp,fontWeight=FontWeight.Bold),shape=RoundedCornerShape(9.dp))
       Spacer(Modifier.width(6.dp))
-      Button({val n=qty.toIntOrNull()?:return@Button;onSave(p,n);saved=true},colors=ButtonDefaults.buttonColors(containerColor=Green,contentColor=Color.Black),
-        contentPadding=PaddingValues(horizontal=12.dp,vertical=4.dp),shape=RoundedCornerShape(9.dp)){Text(if(saved)"✓" else "Save",fontSize=12.sp,fontWeight=FontWeight.Bold)}
+      Button({val n=qty.toIntOrNull()?:return@Button;onSave(p,n);saved=true},
+        colors=ButtonDefaults.buttonColors(containerColor=Green,contentColor=Color.Black),
+        contentPadding=PaddingValues(horizontal=12.dp,vertical=4.dp),shape=RoundedCornerShape(9.dp)){
+        Text(if(saved)"✓" else "Save",fontSize=12.sp,fontWeight=FontWeight.Bold)}
     }
   }}
 }
