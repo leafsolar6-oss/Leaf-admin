@@ -2,7 +2,7 @@ plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android'; id 'c
 android {
   namespace 'ng.leafsolar.admin'
   compileSdk 34
-  defaultConfig { applicationId "ng.leafsolar.admin"; minSdk 24; targetSdk 34; versionCode 7; versionName "1.6" }
+  defaultConfig { applicationId "ng.leafsolar.admin"; minSdk 24; targetSdk 34; versionCode 8; versionName "2.0" }
   buildFeatures { compose true; buildConfig true }
   composeOptions { kotlinCompilerExtensionVersion '1.5.14' }
   compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -14,6 +14,7 @@ dependencies {
   implementation platform('androidx.compose:compose-bom:2024.06.00')
   implementation 'androidx.compose.ui:ui'
   implementation 'androidx.compose.material3:material3'
+  implementation 'androidx.compose.material:material-icons-extended'
   implementation 'androidx.compose.ui:ui-tooling-preview'
   implementation 'androidx.compose.foundation:foundation'
   implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
@@ -24,4 +25,7 @@ dependencies {
   implementation platform('com.google.firebase:firebase-bom:33.1.2')
   implementation 'com.google.firebase:firebase-messaging-ktx'
   implementation 'com.google.firebase:firebase-analytics-ktx'
+  // Image loading + pull-to-refresh for the modern UI
+  implementation 'io.coil-kt:coil-compose:2.6.0'
+  implementation 'com.google.accompanist:accompanist-swiperefresh:0.34.0'
 }
