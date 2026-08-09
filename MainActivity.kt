@@ -668,8 +668,15 @@ fun App(act: ComponentActivity) {
 }
 
 // ---------- Reusable pieces ----------
-@Composable fun SectionCard(content: @Composable ColumnScope.() -> Unit) {
-  Surface(shape = RoundedCornerShape(16.dp), color = Surface, shadowElevation = 1.dp) {
+@Composable fun SectionCard(
+  modifier: Modifier = Modifier,
+  border: androidx.compose.foundation.BorderStroke? = null,
+  content: @Composable ColumnScope.() -> Unit
+) {
+  Surface(
+    shape = RoundedCornerShape(16.dp), color = Surface, shadowElevation = 1.dp,
+    border = border, modifier = modifier
+  ) {
     Column(Modifier.padding(14.dp), content = content)
   }
 }
