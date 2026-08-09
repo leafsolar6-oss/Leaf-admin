@@ -33,7 +33,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.LocalTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -724,7 +724,7 @@ fun App(act: ComponentActivity) {
         OutlinedTextField(qty, { qty = it.filter { c -> c.isDigit() } }, label = { Text("Qty", fontSize = 10.sp) },
           singleLine = true, modifier = Modifier.width(80.dp),
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-          textStyle = LocalTextStyle.current.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp),
+          textStyle = TextStyle(fontWeight = FontWeight.Bold, fontSize = 14.sp),
           shape = RoundedCornerShape(10.dp))
         Spacer(Modifier.width(6.dp))
         Button({ busy = true; val n = qty.toIntOrNull() ?: 0; onUpdate(p, n, true, if (n > 0) "instock" else "outofstock") },
@@ -778,3 +778,21 @@ fun App(act: ComponentActivity) {
 
 // helper: replace list contents
 fun <T> MutableList<T>.replaceAll(items: List<T>) { clear(); addAll(items) }
+
+fun shortCat(name: String): String = when (name) {
+  "Kitchen & Cooking" -> "Kitchen"
+  "Fridges & Freezers" -> "Fridges"
+  "Air Conditioners" -> "ACs"
+  "Washers & Dryers" -> "Washers"
+  "Audio & Sound" -> "Audio"
+  "Fans & Coolers" -> "Fans"
+  "Generators & Power" -> "Generators"
+  "Water Dispensers" -> "Dispensers"
+  "Solar & Inverters" -> "Solar/Inv"
+  "Solar Packages" -> "Solar Pkgs"
+  "Tubular Packages" -> "Tubular"
+  "Lithium Packages" -> "Lithium"
+  "Commercial Packages" -> "Commercial"
+  "Industrial Packages" -> "Industrial"
+  else -> name
+}
