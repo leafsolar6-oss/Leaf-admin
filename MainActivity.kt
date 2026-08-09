@@ -146,7 +146,7 @@ class MainActivity:ComponentActivity(){
             }
           }
         }
-      }}
+      }
     }){pad->Box(Modifier.padding(pad)){
       when(tab){ 0->Dashboard(orders,products);
         1->Orders(orders){o,s-> kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.Main){
