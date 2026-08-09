@@ -458,12 +458,18 @@ fun App(act: ComponentActivity) {
       ) }
       scope.launch {
         try {
-          Api.updateProduct(p.id, qty, manage, status)
-          // Reconcile ONLY this one product (fast, no full 353-product refetch)
-          Api.product(p.id)?.let { fresh -> mutateProduct(p.id) { fresh } }
+          // Status-only changes use the fast batch endpoint (~1-2s vs 4s);
+          // qty/track changes use the standard PUT.
+          if (manage == null && qty == null && status != null) {
+            Api.bulkStock(listOf(p.id), status)
+          } else if (status != null && qty != null) {
+            Api.updateProduct(p.id, qty, manage ?: true, status)
+          } else {
+            Api.updateProduct(p.id, qty, manage, status)
+          }
         } catch (e: Exception) {
           toast = "Save failed: ${e.message}"
-          runCatching { Api.product(p.id)?.let { fresh -> mutateProduct(p.id) { fresh } } }
+          runCatching { products.replaceAll(Api.products()) }
         }
       }
     }
@@ -484,19 +490,21 @@ fun App(act: ComponentActivity) {
         val (ok, fail) = Api.bulkStock(ids, status)
         toast = if (fail == 0) "Marked $ok product${if (ok==1)"" else "s"} ${if (status=="outofstock") "out of stock" else "in stock"}"
                 else "Done ($ok ok, $fail failed)"
-        // Reconcile only the affected products
-        coroutineScope {
-          ids.map { id ->
-            async(Dispatchers.IO) { Api.product(id) }
-          }.awaitAll()
-        }.forEach { fresh -> fresh?.let { mutateProduct(it.id) { fresh } } }
       }
     }
 
     val onStatus: (Order, String) -> Unit = { o, s ->
+      // Optimistic: flip instantly
+      val i = orders.indexOfFirst { it.id == o.id }
+      if (i >= 0) orders[i] = orders[i].copy(status = s)
       scope.launch {
-        try { Api.setStatus(o.id, s); orders.replaceAll(Api.orders()); toast = "Order #${o.number} → ${s.replaceFirstChar { it.uppercase() }} · customer emailed" }
-        catch (e: Exception) { toast = "Update failed: ${e.message}" }
+        try {
+          Api.setStatus(o.id, s)
+          toast = "Order #${o.number} → ${s.replaceFirstChar { it.uppercase() }} · customer emailed"
+        } catch (e: Exception) {
+          toast = "Update failed: ${e.message}"
+          runCatching { orders.replaceAll(Api.orders()) }
+        }
       }
     }
 
