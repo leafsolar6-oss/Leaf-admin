@@ -7,7 +7,6 @@ android {
     manifest.srcFile 'AndroidManifest.xml'
     java.srcDirs = ['.']
     res.srcDirs = ['.']
-    exclude 'app-build.gradle','build.gradle','settings.gradle','gradlew','gradlew.bat','gradle-wrapper.properties','README.md','build-apk.yml','gradle-wrapper.jar'
   } }
   buildFeatures { compose true; buildConfig true }
   composeOptions { kotlinCompilerExtensionVersion '1.5.14' }
