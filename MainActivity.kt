@@ -3,6 +3,7 @@ package ng.leafsolar.admin
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -186,9 +187,10 @@ fun App(act: ComponentActivity) {
 }
 
 @Composable fun fieldColors() = OutlinedTextFieldDefaults.colors(
-  focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedLabelColor = Lime,
-  unfocusedLabelColor = Color(0xFF8AA092), focusedBorderColor = Lime,
-  unfocusedBorderColor = Color(0xFF34493A), cursorBrush = androidx.compose.ui.graphics.SolidColor(Lime))
+  focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
+  cursorColor = Lime, focusedBorderColor = Lime, unfocusedBorderColor = Color(0xFF34493A),
+  focusedLabelColor = Lime, unfocusedLabelColor = Color(0xFF8AA092),
+  focusedTextColor = Color.White, unfocusedTextColor = Color.White)
 
 @Composable fun Dashboard(orders: List<Order>, products: List<Product>) {
   val rev = orders.filter { it.status in listOf("processing", "completed") }.sumOf { it.total }
