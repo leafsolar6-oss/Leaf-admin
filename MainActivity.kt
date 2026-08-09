@@ -1,12 +1,17 @@
 package ng.leafsolar.admin
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import coil.Coil
+import coil.ImageLoader
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -108,7 +113,8 @@ object Api {
     }
   }
   suspend fun orders(): List<Order> = withContext(Dispatchers.IO) {
-    val arr = JSONArray(exec("orders?per_page=100&orderby=date&order=desc&status=pending,processing,on-hold,completed,cancelled,refunded,failed"))
+    val f = "_fields=id,number,status,total,date_created_gmt,billing,line_items"
+    val arr = JSONArray(exec("orders?per_page=100&orderby=date&order=desc&status=pending,processing,on-hold,completed,cancelled,refunded,failed&$f"))
     (0 until arr.length()).map { i ->
       val o = arr.getJSONObject(i); val b = o.optJSONObject("billing") ?: JSONObject()
       val items = mutableListOf<String>()
@@ -143,7 +149,8 @@ object Api {
 
   suspend fun products(): List<Product> = withContext(Dispatchers.IO) {
     // Fetch page 1 first to learn total pages, then fetch remaining in parallel.
-    val first = exec("products?per_page=100&page=1&status=publish&orderby=title&order=asc")
+    val f = "_fields=id,name,sku,price,regular_price,sale_price,manage_stock,stock_quantity,stock_status,categories,images,type"
+    val first = exec("products?per_page=100&page=1&status=publish&orderby=title&order=asc&$f")
     val firstArr = JSONArray(first)
     if (firstArr.length() == 0) return@withContext emptyList()
     val all = mutableListOf<Product>()
@@ -151,7 +158,7 @@ object Api {
     if (firstArr.length() < 100) return@withContext all
     // fetch remaining pages concurrently
     val more = (2..20).map { page ->
-      async { runCatching { JSONArray(exec("products?per_page=100&page=$page&status=publish&orderby=title&order=asc")) } }
+      async { runCatching { JSONArray(exec("products?per_page=100&page=$page&status=publish&orderby=title&order=asc&$f")) } }
     }.awaitAll()
     for (res in more) {
       val arr = res.getOrNull() ?: continue
@@ -216,6 +223,22 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     setContent { LeafTheme { App(this) } }
   }
+
+  override fun attachBaseContext(base: Context) {
+    super.attachBaseContext(base)
+    // Configure Coil to cache product images on disk for instant repeat loads.
+    Coil.setImageLoader(
+      ImageLoader.Builder(base)
+        .memoryCache { MemoryCache.Builder(base).maxSizePercent(0.25).build() }
+        .diskCache {
+          DiskCache.Builder().directory(base.cacheDir.resolve("image_cache"))
+            .maxSizeBytes(64L * 1024 * 1024).build()
+        }
+        .crossfade(true)
+        .respectCacheHeaders(false)
+        .build()
+    )
+  }
 }
 
 private val LightColors = lightColorScheme(
@@ -257,6 +280,64 @@ val AvatarColors = listOf(Color(0xFF3949AB), Color(0xFF00897B), Color(0xFFEF6C00
   Color(0xFF8E24AA), Color(0xFFD81B60), Color(0xFF43A047), Color(0xFF1E88E5), Color(0xFFC62828))
 fun avatarColor(name: String) = AvatarColors[(name.hashCode() and 0x7fffffff) % AvatarColors.size]
 
+
+// ---------- Offline cache: show last data instantly, refresh in background ----------
+object LocalCache {
+  private const val PREF = "leaf-cache"
+  private fun prefs(ctx: Context): SharedPreferences = ctx.getSharedPreferences(PREF, 0)
+  fun saveOrders(ctx: Context, list: List<Order>) =
+    prefs(ctx).edit().putString("orders", serializeOrders(list)).apply()
+  fun saveProducts(ctx: Context, list: List<Product>) =
+    prefs(ctx).edit().putString("products", serializeProducts(list)).apply()
+  fun loadOrders(ctx: Context): List<Order> = try {
+    prefs(ctx).getString("orders", null)?.let { deserializeOrders(it) } ?: emptyList()
+  } catch (e: Exception) { emptyList() }
+  fun loadProducts(ctx: Context): List<Product> = try {
+    prefs(ctx).getString("products", null)?.let { deserializeProducts(it) } ?: emptyList()
+  } catch (e: Exception) { emptyList() }
+
+  private fun serializeOrders(list: List<Order>) = JSONArray().apply {
+    list.forEach { o -> put(JSONObject().apply {
+      put("id", o.id); put("number", o.number); put("name", o.name); put("phone", o.phone)
+      put("email", o.email); put("total", o.total); put("status", o.status); put("date", o.date)
+      put("items", JSONArray(o.items))
+    }) }
+  }.toString()
+  private fun deserializeOrders(s: String): List<Order> {
+    val a = JSONArray(s); val out = mutableListOf<Order>()
+    for (i in 0 until a.length()) { val o = a.getJSONObject(i)
+      val items = mutableListOf<String>(); val ia = o.optJSONArray("items")
+      if (ia != null) for (j in 0 until ia.length()) items.add(ia.getString(j))
+      out.add(Order(o.getLong("id"), o.optString("number"), o.optString("name"), o.optString("phone"),
+        o.optString("email"), items, o.optDouble("total", 0.0), o.optString("status","pending"), o.optString("date")))
+    }
+    return out
+  }
+  private fun serializeProducts(list: List<Product>) = JSONArray().apply {
+    list.forEach { p -> put(JSONObject().apply {
+      put("id", p.id); put("name", p.name); put("sku", p.sku); put("price", p.price)
+      put("manageStock", p.manageStock)
+      if (p.stockQty != null) put("stockQty", p.stockQty) else put("stockQty", JSONObject.NULL)
+      put("stockStatus", p.stockStatus); put("image", p.image); put("type", p.type)
+      put("regularPrice", p.regularPrice)
+      if (p.salePrice != null) put("salePrice", p.salePrice) else put("salePrice", JSONObject.NULL)
+      put("categories", JSONArray(p.categories))
+    }) }
+  }.toString()
+  private fun deserializeProducts(s: String): List<Product> {
+    val a = JSONArray(s); val out = mutableListOf<Product>()
+    for (i in 0 until a.length()) { val p = a.getJSONObject(i)
+      val cats = mutableListOf<String>(); val ca = p.optJSONArray("categories")
+      if (ca != null) for (j in 0 until ca.length()) cats.add(ca.getString(j))
+      out.add(Product(p.getLong("id"), p.optString("name"), p.optString("sku"), p.optDouble("price",0.0),
+        p.optBoolean("manageStock"), if (p.isNull("stockQty")) null else p.optInt("stockQty"),
+        p.optString("stockStatus","instock"), cats, p.optString("image"), p.optString("type","simple"),
+        p.optDouble("regularPrice",0.0), if (p.isNull("salePrice")) null else p.optDouble("salePrice",0.0)))
+    }
+    return out
+  }
+}
+
 @Composable
 fun App(act: ComponentActivity) {
   val prefs = act.getSharedPreferences("leaf-admin", 0)
@@ -281,8 +362,12 @@ fun App(act: ComponentActivity) {
   fun refresh(after: () -> Unit = {}) {
     scope.launch {
       refreshing = true
-      try { orders.replaceAll(Api.orders()); products.replaceAll(Api.products()); lastSync = System.currentTimeMillis() }
-      catch (e: Exception) { toast = "Couldn't refresh: ${e.message}" }
+      try {
+        val o = Api.orders(); val p = Api.products()
+        orders.replaceAll(o); products.replaceAll(p)
+        LocalCache.saveOrders(ctx, o); LocalCache.saveProducts(ctx, p)
+        lastSync = System.currentTimeMillis()
+      } catch (e: Exception) { toast = "Couldn't refresh: ${e.message}" }
       refreshing = false; after()
     }
   }
@@ -307,10 +392,26 @@ fun App(act: ComponentActivity) {
 
   LaunchedEffect(Unit) {
     val u = prefs.getString("u", null); val p = prefs.getString("p", null)
-    if (u != null && p != null) { Api.setAuth(u, p); user = u; pass = p; logged = true }
+    if (u != null && p != null) {
+      Api.setAuth(u, p); user = u; pass = p; logged = true
+      // show cached data instantly while fresh data loads
+      orders.replaceAll(LocalCache.loadOrders(ctx))
+      products.replaceAll(LocalCache.loadProducts(ctx))
+    }
   }
   LaunchedEffect(logged) {
-    if (logged) { refresh(); ensureNotifPermission(); registerPush() }
+    if (logged) {
+      ensureNotifPermission(); registerPush()
+      // background sync — no spinner so cached UI stays responsive
+      scope.launch {
+        try {
+          val o = Api.orders(); val p = Api.products()
+          orders.replaceAll(o); products.replaceAll(p)
+          LocalCache.saveOrders(ctx, o); LocalCache.saveProducts(ctx, p)
+          lastSync = System.currentTimeMillis()
+        } catch (e: Exception) { toast = "Couldn't refresh: ${e.message}" }
+      }
+    }
   }
   // Auto-refresh every 45 seconds while in foreground
   LaunchedEffect(logged) {
