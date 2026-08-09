@@ -263,7 +263,7 @@ fun App(act: ComponentActivity) {
   Column(Modifier.padding(12.dp)) {
     Row(verticalAlignment = Alignment.CenterVertically) {
       OutlinedTextField(q, { q = it }, label = { Text("Search / SKU") }, modifier = Modifier.weight(1f), singleLine = true,
-        shape = RoundedCornerShape(12.dp), colors = OutlinedTextFieldDefaults.colors(cursorColor = Green, focusedBorderColor = Green, unfocusedBorderColor = Color(0xFF34493A), focusedLabelColor = Lime)
+        shape = RoundedCornerShape(12.dp), colors = OutlinedTextFieldDefaults.colors(cursorColor = Green, focusedBorderColor = Green, unfocusedBorderColor = Color(0xFF34493A), focusedLabelColor = Lime))
       Spacer(Modifier.width(8.dp))
       Button({ scan() }, colors = ButtonDefaults.buttonColors(containerColor = Dark, contentColor = Lime),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp), shape = RoundedCornerShape(12.dp)) { Text("Scan", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
