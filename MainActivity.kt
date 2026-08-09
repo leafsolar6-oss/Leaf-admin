@@ -294,22 +294,71 @@ fun App(act: ComponentActivity) {
         prefs.edit().clear().apply(); logged = false
       },
       onRefresh = { refresh() },
-      onStatus = { o, s ->
-        scope.launch {
-          refreshing = true
-          try { Api.setStatus(o.id, s); orders.replaceAll(Api.orders()); toast = "Order #${o.number} → ${s.replaceFirstChar { it.uppercase() }} · customer emailed" }
-          catch (e: Exception) { toast = "Update failed: ${e.message}" }
-          refreshing = false
-        }
-      },
-      onUpdate = { p, qty, manage, status ->
-        scope.launch {
-          refreshing = true
-          try { Api.updateProduct(p.id, qty, manage, status); products.replaceAll(Api.products()); toast = "Inventory saved" }
-          catch (e: Exception) { toast = "Save failed: ${e.message}" }
-          refreshing = false
-        }
+  fun mutateProduct(id: Long, transform: (Product) -> Product) {
+    val i = products.indexOfFirst { it.id == id }
+    if (i >= 0) products[i] = transform(products[i])
+  }
+
+  // Instant optimistic update: flip the UI immediately, sync in background, then reconcile.
+  val onUpdate: (Product, Int?, Boolean?, String?) -> Unit = { p, qty, manage, status ->
+    // 1. update local list instantly
+    mutateProduct(p.id) { it.copy(
+      manageStock = manage ?: it.manageStock,
+      stockQty = qty ?: it.stockQty,
+      stockStatus = status ?: it.stockStatus,
+    ) }
+    scope.launch {
+      try {
+        Api.updateProduct(p.id, qty, manage, status)
+        // silent reconcile (no spinner) so the UI stays fast
+        runCatching { products.replaceAll(Api.products()) }
+      } catch (e: Exception) {
+        toast = "Save failed: ${e.message}"
+        runCatching { products.replaceAll(Api.products()) }
       }
+    }
+  }
+
+  // Bulk set stock status for a list of product ids (instant + background sync in parallel)
+  val onBulkStock: (List<Long>, String) -> Unit = bulk@ { ids, status ->
+    if (ids.isEmpty()) return@bulk
+    val target = ids.toHashSet()
+    val qtyFor = if (status == "outofstock") 0 else null
+    // optimistic: flip all matched products now
+    for (i in products.indices) {
+      if (products[i].id in target) {
+        products[i] = products[i].copy(
+          stockStatus = status,
+          manageStock = if (qtyFor != null) true else products[i].manageStock,
+          stockQty = if (qtyFor != null) 0 else products[i].stockQty)
+      }
+    }
+    scope.launch {
+      var ok = 0; var fail = 0
+      // Fire all updates concurrently for speed, then reconcile once.
+      coroutineScope {
+        ids.map { id ->
+          async(Dispatchers.IO) {
+            val r = runCatching {
+              if (status == "outofstock") Api.updateProduct(id, 0, true, "outofstock")
+              else Api.updateProduct(id, null, null, "instock")
+            }
+            if (r.isSuccess) ok++ else fail++
+          }
+        }.awaitAll()
+      }
+      toast = if (fail == 0) "Marked $ok product${if (ok==1)"" else "s"} ${if (status=="outofstock") "out of stock" else "in stock"}"
+              else "Done ($ok ok, $fail failed)"
+      runCatching { products.replaceAll(Api.products()) }
+    }
+  }
+
+  val onStatus: (Order, String) -> Unit = { o, s ->
+    scope.launch {
+      try { Api.setStatus(o.id, s); orders.replaceAll(Api.orders()); toast = "Order #${o.number} → ${s.replaceFirstChar { it.uppercase() }} · customer emailed" }
+      catch (e: Exception) { toast = "Update failed: ${e.message}" }
+    }
+  }
     )
   }
 }
@@ -355,7 +404,9 @@ fun App(act: ComponentActivity) {
   orders: List<Order>, products: List<Product>,
   refreshing: Boolean, lastSync: Long,
   onLogout: () -> Unit, onRefresh: () -> Unit,
-  onStatus: (Order, String) -> Unit, onUpdate: (Product, Int?, Boolean?, String?) -> Unit
+  onStatus: (Order, String) -> Unit,
+  onUpdate: (Product, Int?, Boolean?, String?) -> Unit,
+  onBulkStock: (List<Long>, String) -> Unit
 ) {
   val pending = orders.count { it.status == "pending" || it.status == "on-hold" }
   val titles = listOf("Dashboard", "Orders", "Inventory")
@@ -401,7 +452,7 @@ fun App(act: ComponentActivity) {
       when (tab) {
         0 -> DashboardScreen(orders, products, onRefresh)
         1 -> OrdersScreen(orders, onRefresh, onStatus)
-        else -> InventoryScreen(products, onRefresh, onUpdate)
+        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock)
       }
     }
   }
@@ -607,10 +658,15 @@ fun App(act: ComponentActivity) {
 
 // ---------- Inventory ----------
 @OptIn(ExperimentalLayoutApi::class)
-@Composable fun InventoryScreen(products: List<Product>, onRefresh: () -> Unit, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
+@Composable fun InventoryScreen(
+  products: List<Product>, onRefresh: () -> Unit,
+  onUpdate: (Product, Int?, Boolean?, String?) -> Unit,
+  onBulkStock: (List<Long>, String) -> Unit
+) {
   var q by remember { mutableStateOf("") }
   var stockFilter by remember { mutableStateOf(0) }
   var category by remember { mutableStateOf("all") }
+  var confirmBulk by remember { mutableStateOf<String?>(null) } // "outofstock" | "instock"
   val ctx = LocalContext.current
   val categories = remember(products) {
     val c = LinkedHashMap<String, Int>()
@@ -628,6 +684,22 @@ fun App(act: ComponentActivity) {
     val opts = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8, Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E, Barcode.FORMAT_CODE_128, Barcode.FORMAT_QR_CODE).enableAutoZoom().build()
     GmsBarcodeScanning.getClient(ctx, opts).startScan().addOnSuccessListener { b -> b.rawValue?.let { q = it } }.addOnFailureListener {}
   } catch (_: Exception) {}
+
+  confirmBulk?.let { target ->
+    AlertDialog(
+      onDismissRequest = { confirmBulk = null },
+      title = { Text(if (target == "outofstock") "Mark all as out of stock?" else "Mark all as in stock?") },
+      text = { Text("This will update ${shown.size} product${if (shown.size==1) "" else "s"} currently shown (filtered by search/category/stock). It saves immediately and cannot be undone in bulk.") },
+      confirmButton = {
+        Button({ onBulkStock(shown.map { it.id }, target); confirmBulk = null },
+          colors = ButtonDefaults.buttonColors(containerColor = if (target=="outofstock") Danger else Green, contentColor = Color.White)) {
+          Text(if (target=="outofstock") "Mark out of stock" else "Mark in stock")
+        }
+      },
+      dismissButton = { TextButton({ confirmBulk = null }) { Text("Cancel") } }
+    )
+  }
+
   Column(Modifier.fillMaxSize()) {
     Row(Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
       OutlinedTextField(q, { q = it }, label = { Text("Search or scan SKU") }, singleLine = true,
@@ -645,7 +717,7 @@ fun App(act: ComponentActivity) {
       }
     }
     Spacer(Modifier.height(6.dp))
-    Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
       listOf("All" to 0, "Out of stock" to 1, "Low stock" to 2).forEach { (l, i) ->
         val a = stockFilter == i
         Surface(color = if (a) Green else Surface, shape = RoundedCornerShape(999.dp),
@@ -653,6 +725,25 @@ fun App(act: ComponentActivity) {
           modifier = Modifier.clickable { stockFilter = i }) {
           Text(l, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (a) Color.White else InkMuted,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+        }
+      }
+    }
+    Spacer(Modifier.height(8.dp))
+    // Bulk actions bar — acts on the currently filtered/shown products
+    Surface(color = Surface, shadowElevation = 2.dp) {
+      Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("${shown.size} shown", fontSize = 12.sp, color = InkMuted, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+        OutlinedButton({ confirmBulk = "instock" }, enabled = shown.isNotEmpty(),
+          shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
+          Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(16.dp))
+          Spacer(Modifier.width(4.dp)); Text("All in stock", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.width(8.dp))
+        Button({ confirmBulk = "outofstock" }, enabled = shown.isNotEmpty(), shape = RoundedCornerShape(10.dp),
+          colors = ButtonDefaults.buttonColors(containerColor = Danger, contentColor = Color.White),
+          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
+          Icon(Icons.Default.RemoveShoppingCart, null, modifier = Modifier.size(16.dp))
+          Spacer(Modifier.width(4.dp)); Text("All out of stock", fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
       }
     }
@@ -668,9 +759,15 @@ fun App(act: ComponentActivity) {
 
 @Composable fun ProductRow(p: Product, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
   var qty by remember(p.id) { mutableStateOf((p.stockQty ?: 0).toString()) }
-  var busy by remember(p.id) { mutableStateOf(false) }
+  var syncing by remember(p.id) { mutableStateOf(false) }
   val out = p.stockStatus == "outofstock"
   val low = p.manageStock && (p.stockQty ?: 0) in 1..5
+  // Reset syncing when the reconciled product matches what we set
+  LaunchedEffect(p.stockStatus, p.stockQty) { syncing = false }
+  fun apply(qty: Int? = null, manage: Boolean? = null, status: String? = null) {
+    syncing = true
+    onUpdate(p, qty, manage, status)
+  }
   SectionCard {
     Row(verticalAlignment = Alignment.CenterVertically) {
       // Thumbnail with corner out-of-stock badge
@@ -716,32 +813,35 @@ fun App(act: ComponentActivity) {
       Text("Track stock", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = InkMuted)
       Spacer(Modifier.width(6.dp))
       Switch(checked = p.manageStock, onCheckedChange = { v ->
-        busy = true
-        onUpdate(p, if (v) (qty.toIntOrNull() ?: 0) else null, v, null)
+        apply(if (v) (qty.toIntOrNull() ?: 0) else null, v, null)
       }, colors = SwitchDefaults.colors(checkedTrackColor = Green, checkedThumbColor = Color.White))
       Spacer(Modifier.weight(1f))
+      if (syncing) {
+        CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(20.dp), color = Green)
+      }
       if (p.manageStock) {
-        OutlinedTextField(qty, { qty = it.filter { c -> c.isDigit() } }, label = { Text("Qty", fontSize = 10.sp) },
+        Spacer(Modifier.width(8.dp))
+        OutlinedTextField(qty, { qty = it.filter { c -> c.isDigit() }; syncing = false }, label = { Text("Qty", fontSize = 10.sp) },
           singleLine = true, modifier = Modifier.width(80.dp),
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
           textStyle = TextStyle(fontWeight = FontWeight.Bold, fontSize = 14.sp),
           shape = RoundedCornerShape(10.dp))
         Spacer(Modifier.width(6.dp))
-        Button({ busy = true; val n = qty.toIntOrNull() ?: 0; onUpdate(p, n, true, if (n > 0) "instock" else "outofstock") },
-          shape = RoundedCornerShape(10.dp), enabled = !busy,
+        Button({ val n = qty.toIntOrNull() ?: 0; apply(n, true, if (n > 0) "instock" else "outofstock") },
+          shape = RoundedCornerShape(10.dp),
           colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Color.White),
           contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), modifier = Modifier.height(46.dp)) { Text("Save", fontWeight = FontWeight.Bold) }
       }
     }
     Spacer(Modifier.height(8.dp))
     Button({
-      busy = true
-      if (p.manageStock && !out) { qty = "0"; onUpdate(p, 0, true, "outofstock") }
-      else onUpdate(p, null, null, if (out) "instock" else "outofstock")
-    }, Modifier.fillMaxWidth().height(42.dp), shape = RoundedCornerShape(10.dp), enabled = !busy,
+      if (p.manageStock && !out) { qty = "0"; apply(0, true, "outofstock") }
+      else apply(null, null, if (out) "instock" else "outofstock")
+    }, Modifier.fillMaxWidth().height(42.dp), shape = RoundedCornerShape(10.dp),
       colors = ButtonDefaults.buttonColors(
         containerColor = if (out) Green else DangerBg, contentColor = if (out) Color.White else Danger)) {
-      Icon(if (out) Icons.Default.CheckCircle else Icons.Default.RemoveShoppingCart, null, modifier = Modifier.size(18.dp))
+      if (syncing) CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp), color = if (out) Color.White else Danger)
+      else Icon(if (out) Icons.Default.CheckCircle else Icons.Default.RemoveShoppingCart, null, modifier = Modifier.size(18.dp))
       Spacer(Modifier.width(6.dp))
       Text(if (out) "Mark in stock" else "Mark out of stock", fontWeight = FontWeight.Bold, fontSize = 13.sp)
     }
