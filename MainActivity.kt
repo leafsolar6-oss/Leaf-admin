@@ -287,6 +287,65 @@ fun App(act: ComponentActivity) {
       val openOrders = act.intent?.getBooleanExtra("open_orders", false) ?: false
       mutableStateOf(if (openOrders) 1 else 0)
     }
+    fun mutateProduct(id: Long, transform: (Product) -> Product) {
+      val i = products.indexOfFirst { it.id == id }
+      if (i >= 0) products[i] = transform(products[i])
+    }
+
+    val onUpdate: (Product, Int?, Boolean?, String?) -> Unit = { p, qty, manage, status ->
+      mutateProduct(p.id) { it.copy(
+        manageStock = manage ?: it.manageStock,
+        stockQty = qty ?: it.stockQty,
+        stockStatus = status ?: it.stockStatus,
+      ) }
+      scope.launch {
+        try {
+          Api.updateProduct(p.id, qty, manage, status)
+          runCatching { products.replaceAll(Api.products()) }
+        } catch (e: Exception) {
+          toast = "Save failed: ${e.message}"
+          runCatching { products.replaceAll(Api.products()) }
+        }
+      }
+    }
+
+    val onBulkStock: (List<Long>, String) -> Unit = bulk@ { ids, status ->
+      if (ids.isEmpty()) return@bulk
+      val target = ids.toHashSet()
+      for (i in products.indices) {
+        if (products[i].id in target) {
+          products[i] = products[i].copy(
+            stockStatus = status,
+            manageStock = if (status == "outofstock") true else products[i].manageStock,
+            stockQty = if (status == "outofstock") 0 else products[i].stockQty)
+        }
+      }
+      scope.launch {
+        var ok = 0; var fail = 0
+        coroutineScope {
+          ids.map { id ->
+            async(Dispatchers.IO) {
+              val r = runCatching {
+                if (status == "outofstock") Api.updateProduct(id, 0, true, "outofstock")
+                else Api.updateProduct(id, null, null, "instock")
+              }
+              if (r.isSuccess) ok++ else fail++
+            }
+          }.awaitAll()
+        }
+        toast = if (fail == 0) "Marked $ok product${if (ok==1)"" else "s"} ${if (status=="outofstock") "out of stock" else "in stock"}"
+                else "Done ($ok ok, $fail failed)"
+        runCatching { products.replaceAll(Api.products()) }
+      }
+    }
+
+    val onStatus: (Order, String) -> Unit = { o, s ->
+      scope.launch {
+        try { Api.setStatus(o.id, s); orders.replaceAll(Api.orders()); toast = "Order #${o.number} → ${s.replaceFirstChar { it.uppercase() }} · customer emailed" }
+        catch (e: Exception) { toast = "Update failed: ${e.message}" }
+      }
+    }
+
     MainScaffold(tab, { tab = it }, orders, products, refreshing, lastSync,
       onLogout = {
         val t = PushStore.getToken(ctx)
@@ -294,71 +353,9 @@ fun App(act: ComponentActivity) {
         prefs.edit().clear().apply(); logged = false
       },
       onRefresh = { refresh() },
-  fun mutateProduct(id: Long, transform: (Product) -> Product) {
-    val i = products.indexOfFirst { it.id == id }
-    if (i >= 0) products[i] = transform(products[i])
-  }
-
-  // Instant optimistic update: flip the UI immediately, sync in background, then reconcile.
-  val onUpdate: (Product, Int?, Boolean?, String?) -> Unit = { p, qty, manage, status ->
-    // 1. update local list instantly
-    mutateProduct(p.id) { it.copy(
-      manageStock = manage ?: it.manageStock,
-      stockQty = qty ?: it.stockQty,
-      stockStatus = status ?: it.stockStatus,
-    ) }
-    scope.launch {
-      try {
-        Api.updateProduct(p.id, qty, manage, status)
-        // silent reconcile (no spinner) so the UI stays fast
-        runCatching { products.replaceAll(Api.products()) }
-      } catch (e: Exception) {
-        toast = "Save failed: ${e.message}"
-        runCatching { products.replaceAll(Api.products()) }
-      }
-    }
-  }
-
-  // Bulk set stock status for a list of product ids (instant + background sync in parallel)
-  val onBulkStock: (List<Long>, String) -> Unit = bulk@ { ids, status ->
-    if (ids.isEmpty()) return@bulk
-    val target = ids.toHashSet()
-    val qtyFor = if (status == "outofstock") 0 else null
-    // optimistic: flip all matched products now
-    for (i in products.indices) {
-      if (products[i].id in target) {
-        products[i] = products[i].copy(
-          stockStatus = status,
-          manageStock = if (qtyFor != null) true else products[i].manageStock,
-          stockQty = if (qtyFor != null) 0 else products[i].stockQty)
-      }
-    }
-    scope.launch {
-      var ok = 0; var fail = 0
-      // Fire all updates concurrently for speed, then reconcile once.
-      coroutineScope {
-        ids.map { id ->
-          async(Dispatchers.IO) {
-            val r = runCatching {
-              if (status == "outofstock") Api.updateProduct(id, 0, true, "outofstock")
-              else Api.updateProduct(id, null, null, "instock")
-            }
-            if (r.isSuccess) ok++ else fail++
-          }
-        }.awaitAll()
-      }
-      toast = if (fail == 0) "Marked $ok product${if (ok==1)"" else "s"} ${if (status=="outofstock") "out of stock" else "in stock"}"
-              else "Done ($ok ok, $fail failed)"
-      runCatching { products.replaceAll(Api.products()) }
-    }
-  }
-
-  val onStatus: (Order, String) -> Unit = { o, s ->
-    scope.launch {
-      try { Api.setStatus(o.id, s); orders.replaceAll(Api.orders()); toast = "Order #${o.number} → ${s.replaceFirstChar { it.uppercase() }} · customer emailed" }
-      catch (e: Exception) { toast = "Update failed: ${e.message}" }
-    }
-  }
+      onStatus = onStatus,
+      onUpdate = onUpdate,
+      onBulkStock = onBulkStock
     )
   }
 }
