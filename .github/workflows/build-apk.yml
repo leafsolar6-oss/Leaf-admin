@@ -16,7 +16,7 @@ jobs:
           mkdir -p app/src/main/java/ng/leafsolar/admin app/src/main/res/values app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26
           cp app-build.gradle app/build.gradle
           cp AndroidManifest.xml app/src/main/
-          cp MainActivity.kt app/src/main/java/ng/leafsolar/admin/
+          cp MainActivity.kt FcmService.kt PushStore.kt FcmInit.kt app/src/main/java/ng/leafsolar/admin/
           cp colors.xml strings.xml themes.xml app/src/main/res/values/
           cp ic_leaf.xml app/src/main/res/drawable/
           cp ic_launcher.xml app/src/main/res/mipmap-anydpi-v26/

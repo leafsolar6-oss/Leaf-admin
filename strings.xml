@@ -1,1 +1,11 @@
-<resources><string name="app_name">Leaf Admin</string></resources>
+<resources>
+    <string name="app_name">Leaf Admin</string>
+    <!-- Firebase Cloud Messaging.
+         Replace these two values after creating the Firebase project at
+         https://console.firebase.google.com  (Project settings → Cloud Messaging / General).
+         The app still runs without them; push just won't register until filled. -->
+    <string name="fcm_sender_id" translatable="false">REPLACE_WITH_FIREBASE_SENDER_ID</string>
+    <string name="fcm_project_id" translatable="false">REPLACE_WITH_FIREBASE_PROJECT_ID</string>
+    <string name="fcm_app_id" translatable="false">REPLACE_WITH_FIREBASE_APP_ID</string>
+    <string name="fcm_api_key" translatable="false">REPLACE_WITH_FIREBASE_API_KEY</string>
+</resources>

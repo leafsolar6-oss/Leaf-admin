@@ -1,15 +1,22 @@
 package ng.leafsolar.admin
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import com.google.firebase.messaging.FirebaseMessaging
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -50,7 +57,7 @@ data class Order(val id: Long, val number: String, val name: String, val phone: 
                 val status: String, val date: String)
 data class Product(val id: Long, val name: String, val sku: String, val price: Double,
                    val manageStock: Boolean, val stockQty: Int?, val stockStatus: String,
-                   val type: String)
+                   val categories: List<String>, val type: String)
 
 object Api {
   private val client = OkHttpClient()
@@ -87,10 +94,16 @@ object Api {
       if (arr.length() == 0) break
       for (i in 0 until arr.length()) {
         val p = arr.getJSONObject(i)
+        val catsArr = p.optJSONArray("categories") ?: JSONArray()
+        val catNames = mutableListOf<String>()
+        for (c in 0 until catsArr.length()) {
+          val nm = catsArr.getJSONObject(c).optString("name", "")
+          if (nm.isNotBlank() && nm.lowercase() != "electronics") catNames.add(nm)
+        }
         all.add(Product(p.getLong("id"), p.getString("name"), p.optString("sku"),
           p.optDouble("price", 0.0), p.optBoolean("manage_stock"),
           if (p.isNull("stock_quantity")) null else p.optInt("stock_quantity"),
-          p.optString("stock_status", "instock"), p.optString("type", "simple")))
+          p.optString("stock_status", "instock"), catNames, p.optString("type", "simple")))
       }
       if (arr.length() < 100) break; page++
     }
@@ -129,6 +142,30 @@ fun App(act: ComponentActivity) {
   var toast by remember { mutableStateOf<String?>(null) }
   val scope = rememberCoroutineScope()
   val ctx = act.applicationContext
+  Fcm.init(ctx)
+
+  // Notification permission (Android 13+)
+  val notifPermission = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestPermission()) { }
+  fun ensureNotifPermission() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      if (ContextCompat.checkSelfPermission(act, Manifest.permission.POST_NOTIFICATIONS)
+        != PackageManager.PERMISSION_GRANTED) {
+        notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+      }
+    }
+  }
+
+  // Register this device for new-order push notifications.
+  fun registerPush() {
+    if (!Fcm.available(ctx)) return
+    Fcm.token { token ->
+      if (token != null) {
+        PushStore.saveToken(ctx, token)
+        Thread { try { PushRegistrar.register(ctx, token) } catch (_: Exception) {} }.start()
+      }
+    }
+  }
 
   fun refresh() {
     scope.launch {
@@ -143,7 +180,13 @@ fun App(act: ComponentActivity) {
     val u = prefs.getString("u", null); val p = prefs.getString("p", null)
     if (u != null && p != null) { Api.setAuth(u, p); user = u; pass = p; logged = true }
   }
-  LaunchedEffect(logged) { if (logged) refresh() }
+  LaunchedEffect(logged) {
+    if (logged) {
+      refresh()
+      ensureNotifPermission()
+      registerPush()
+    }
+  }
   toast?.let { msg ->
     LaunchedEffect(msg) {
       Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show(); toast = null
@@ -193,6 +236,8 @@ fun App(act: ComponentActivity) {
             Text("Refresh", color = Color(0xFFB9C7BD), fontSize = 13.sp, modifier = Modifier.clickable { refresh() })
             Spacer(Modifier.width(14.dp))
             Text("Logout", color = Color(0xFF8AA092), fontSize = 13.sp, modifier = Modifier.clickable {
+              val t = PushStore.getToken(ctx)
+              if (!t.isNullOrBlank()) Thread { try { PushRegistrar.unregister(ctx, t) } catch (_: Exception) {} }.start()
               prefs.edit().clear().apply(); logged = false
             })
           }
@@ -418,15 +463,32 @@ fun App(act: ComponentActivity) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable fun Inventory(act: ComponentActivity, products: List<Product>, onUpdate: (Product, Int?, Boolean?, String?) -> Unit) {
   var q by remember { mutableStateOf("") }
-  var filter by remember { mutableStateOf(0) }
+  var stockFilter by remember { mutableStateOf(0) }   // 0=all, 1=out, 2=low
+  var category by remember { mutableStateOf("all") }
   val ctx = LocalContext.current
-  val shown = remember(products, q, filter) {
+
+  // Build sorted category list with counts (excluding the generic "Electronics" parent)
+  val categories = remember(products) {
+    val counts = LinkedHashMap<String, Int>()
+    products.forEach { p ->
+      if (p.categories.isEmpty()) counts.getOrPut("Uncategorized") { 0 }.let { counts["Uncategorized"] = it + 1 }
+      else p.categories.forEach { c -> counts[c] = (counts[c] ?: 0) + 1 }
+    }
+    counts.entries.sortedByDescending { it.value }.map { it.key to it.value }
+  }
+
+  val shown = remember(products, q, stockFilter, category) {
     products.filter { p ->
       (q.isBlank() || p.name.contains(q, true) || p.sku.contains(q, true)) &&
-      when (filter) {
+      when (stockFilter) {
         1 -> p.stockStatus == "outofstock"
         2 -> p.manageStock && (p.stockQty ?: 0) in 1..5
         else -> true
+      } &&
+      when (category) {
+        "all" -> true
+        "Uncategorized" -> p.categories.isEmpty()
+        else -> p.categories.contains(category)
       }
     }
   }
@@ -443,12 +505,22 @@ fun App(act: ComponentActivity) {
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp), shape = RoundedCornerShape(12.dp)) { Text("Scan", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
     }
     Spacer(Modifier.height(8.dp))
+    // Category chips (horizontally scrollable so all categories are reachable)
+    Text("CATEGORY", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF6E7D72))
+    Spacer(Modifier.height(4.dp))
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+      item { FilterChip("All", products.size, category == "all") { category = "all" } }
+      items(categories, key = { it.first }) { (name, count) ->
+        FilterChip(shortCat(name), count, category == name) { category = name }
+      }
+    }
+    Spacer(Modifier.height(8.dp))
     FlowRowSafe {
       listOf("All" to 0, "Out of stock" to 1, "Low stock" to 2).forEach { (label, i) ->
-        val active = filter == i
+        val active = stockFilter == i
         Surface(color = if (active) Green else Color.White, shape = RoundedCornerShape(999.dp),
           border = if (active) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD8E3D2)),
-          modifier = Modifier.clickable { filter = i }) {
+          modifier = Modifier.clickable { stockFilter = i }) {
           Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold,
             color = if (active) Color.Black else Color(0xFF334038),
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp))
@@ -456,11 +528,51 @@ fun App(act: ComponentActivity) {
       }
     }
     Spacer(Modifier.height(4.dp))
-    Text("${products.count { it.manageStock }} of ${products.size} tracking stock  •  ${products.count { it.stockStatus == "outofstock" }} out of stock",
+    Text("${shown.size} shown  •  ${products.count { it.manageStock }} tracking  •  ${products.count { it.stockStatus == "outofstock" }} out of stock",
       fontSize = 11.sp, color = Color(0xFF6E7D72))
     Spacer(Modifier.height(8.dp))
-    LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(shown, key = { it.id }) { ProductRow(it, onUpdate) } }
+    if (shown.isEmpty()) {
+      Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+        Text("No products match this filter", color = Color(0xFF6E7D72), fontSize = 13.sp)
+      }
+    } else {
+      LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(shown, key = { it.id }) { ProductRow(it, onUpdate) } }
+    }
   }
+}
+
+@Composable fun FilterChip(label: String, count: Int, active: Boolean, onClick: () -> Unit) {
+  Surface(color = if (active) Green else Color.White, shape = RoundedCornerShape(999.dp),
+    border = if (active) null else androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD8E3D2)),
+    modifier = Modifier.clickable { onClick() }) {
+    Row(Modifier.padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+      Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (active) Color.Black else Color(0xFF334038))
+      Spacer(Modifier.width(5.dp))
+      Surface(color = if (active) Color(0x33000000) else Color(0xFFEFF4EC), shape = RoundedCornerShape(999.dp)) {
+        Text(count.toString(), fontSize = 10.sp, fontWeight = FontWeight.ExtraBold,
+          color = if (active) Color.Black else Color(0xFF5b6b61), modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+      }
+    }
+  }
+}
+
+// Shorten long category names for the chip row
+fun shortCat(name: String): String = when (name) {
+  "Kitchen & Cooking" -> "Kitchen"
+  "Fridges & Freezers" -> "Fridges"
+  "Air Conditioners" -> "ACs"
+  "Washers & Dryers" -> "Washers"
+  "Audio & Sound" -> "Audio"
+  "Fans & Coolers" -> "Fans"
+  "Generators & Power" -> "Generators"
+  "Water Dispensers" -> "Dispensers"
+  "Solar & Inverters" -> "Solar/Inv"
+  "Solar Packages" -> "Solar Pkgs"
+  "Tubular Packages" -> "Tubular"
+  "Lithium Packages" -> "Lithium"
+  "Commercial Packages" -> "Commercial"
+  "Industrial Packages" -> "Industrial"
+  else -> name
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -492,8 +604,11 @@ fun App(act: ComponentActivity) {
           Spacer(Modifier.height(3.dp))
           Row(verticalAlignment = Alignment.CenterVertically) {
             Text("₦%,d".format(p.price.toLong()), fontSize = 12.5.sp, color = Green, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.width(8.dp))
-            if (p.sku.isNotBlank()) Text("SKU: ${p.sku}", fontSize = 11.sp, color = Color(0xFF6E7D72))
+            if (p.sku.isNotBlank()) { Spacer(Modifier.width(8.dp)); Text("SKU: ${p.sku}", fontSize = 11.sp, color = Color(0xFF6E7D72)) }
+          }
+          if (p.categories.isNotEmpty()) {
+            Spacer(Modifier.height(2.dp))
+            Text(p.categories.joinToString(" · "), fontSize = 10.5.sp, color = Color(0xFF8A998F), maxLines = 1)
           }
         }
         Spacer(Modifier.width(8.dp))
