@@ -77,20 +77,23 @@ import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
 
-// ---------- Brand palette ----------
+// ---------- Brand palette (refined) ----------
 val Green = Color(0xFF2E7D32)
-val GreenDark = Color(0xFF1B5E20)
-val Lime = Color(0xFFAED581)
+val GreenDark = Color(0xFF0E1F14)
+val GreenDeep = Color(0xFF1B5E20)
+val Lime = Color(0xFF9CCC65)
 val Leaf = Color(0xFF43A047)
-val Bg = Color(0xFFF4F7F5)
+val Mint = Color(0xFFE8F5E9)
+val Bg = Color(0xFFF7F9F7)
 val Surface = Color(0xFFFFFFFF)
-val Ink = Color(0xFF1B241D)
-val InkMuted = Color(0xFF5A6B60)
-val Line = Color(0xFFE6EDE8)
-val Danger = Color(0xFFC62828)
+val SurfaceAlt = Color(0xFFF1F5F1)
+val Ink = Color(0xFF101A13)
+val InkMuted = Color(0xFF5E6B62)
+val Line = Color(0xFFE3EAE5)
+val Danger = Color(0xFFD32F2F)
 val DangerBg = Color(0xFFFDECEA)
 val Warn = Color(0xFFB26A00)
-val WarnBg = Color(0xFFFFF4D6)
+val WarnBg = Color(0xFFFFF8E1)
 val InfoBg = Color(0xFFE8F1FF)
 val Info = Color(0xFF0B4FA0)
 val OkBg = Color(0xFFE4F7D6)
@@ -348,7 +351,7 @@ class MainActivity : ComponentActivity() {
 
 private val LightColors = lightColorScheme(
   primary = Green, onPrimary = Color.White,
-  primaryContainer = OkBg, onPrimaryContainer = GreenDark,
+  primaryContainer = Mint, onPrimaryContainer = GreenDeep,
   secondary = Leaf, background = Bg, surface = Surface,
   onBackground = Ink, onSurface = Ink,
   error = Danger, onError = Color.White,
@@ -765,23 +768,23 @@ fun App(act: ComponentActivity) {
   Scaffold(
     containerColor = Bg,
     topBar = {
-      Surface(color = Surface, shadowElevation = 1.dp) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+      Surface(color = GreenDark, shadowElevation = 6.dp) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-              Text(titles[tab], fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
+              Text(titles[tab], fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
               val syncTxt = if (lastSync == 0L) "Syncing…" else "Updated ${timeAgo(SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(lastSync)))}"
-              Text(syncTxt, fontSize = 11.5.sp, color = InkMuted)
+              Text(syncTxt, fontSize = 11.5.sp, color = Color.White.copy(alpha = 0.7f))
             }
             if (refreshing) CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(20.dp), color = Green)
-            else IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh", tint = InkMuted) }
-            IconButton(onClick = onLogout) { Icon(Icons.Default.Logout, "Logout", tint = InkMuted) }
+            else IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh", tint = Color.White.copy(alpha=0.85f)) }
+            IconButton(onClick = onLogout) { Icon(Icons.Default.Logout, "Logout", tint = Color.White.copy(alpha=0.85f)) }
           }
         }
       }
     },
     bottomBar = {
-      NavigationBar(containerColor = Surface, tonalElevation = 8.dp) {
+      NavigationBar(containerColor = GreenDark, tonalElevation = 8.dp) {
         listOf(
           Triple("Dashboard", Icons.Default.Dashboard, 0),
           Triple("Orders", Icons.Default.ReceiptLong, 1),
@@ -795,7 +798,7 @@ fun App(act: ComponentActivity) {
               }) { Icon(icon, label) }
             },
             label = { Text(label, fontSize = 11.sp) },
-            colors = NavigationBarItemDefaults.colors(selectedIconColor = Green, selectedTextColor = Green, indicatorColor = OkBg)
+            colors = NavigationBarItemDefaults.colors(selectedIconColor = Lime, selectedTextColor = Color.White, unselectedIconColor = Color.White.copy(alpha=0.55f), unselectedTextColor = Color.White.copy(alpha=0.55f), indicatorColor = Green)
           )
         }
       }
@@ -818,10 +821,11 @@ fun App(act: ComponentActivity) {
   content: @Composable ColumnScope.() -> Unit
 ) {
   Surface(
-    shape = RoundedCornerShape(16.dp), color = Surface, shadowElevation = 1.dp,
+    shape = RoundedCornerShape(18.dp), color = Surface, shadowElevation = 3.dp,
+    tonalElevation = 1.dp,
     border = border, modifier = modifier
   ) {
-    Column(Modifier.padding(14.dp), content = content)
+    Column(Modifier.padding(15.dp), content = content)
   }
 }
 @Composable fun StatusPill(s: String) {
@@ -1212,9 +1216,9 @@ fun App(act: ComponentActivity) {
       Box {
         if (p.image.isNotBlank()) {
           AsyncImage(model = p.image, contentDescription = p.name,
-            modifier = Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFF1F4F2)))
+            modifier = Modifier.size(66.dp).clip(RoundedCornerShape(14.dp)).background(SurfaceAlt))
         } else {
-          Box(Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFEAF1EB)), contentAlignment = Alignment.Center) {
+          Box(Modifier.size(66.dp).clip(RoundedCornerShape(14.dp)).background(SurfaceAlt), contentAlignment = Alignment.Center) {
             Icon(Icons.Default.Inventory2, null, tint = InkMuted)
           }
         }
