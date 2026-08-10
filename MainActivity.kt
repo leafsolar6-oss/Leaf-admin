@@ -312,26 +312,6 @@ object Api {
       } catch (e: Exception) { null }
   }
 
-  // Bulk price change (percent or fixed)
-  suspend fun bulkPrice(ids: List<Long>, percent: Double? = null, fixed: Double? = null, regular: Boolean = true): Pair<Int,Int> = withContext(Dispatchers.IO) {
-    var ok=0; var fail=0
-    ids.chunked(50).forEach { batch ->
-      try {
-        val arr = JSONArray(); batch.forEach { id ->
-          val o = JSONObject().put("id", id)
-          if (percent != null) o.put(if (regular) "regular_price" else "sale_price", "%.2f".format(0.0)) // simplified below
-          arr.put(o)
-        }
-        // Woo batch endpoint
-        val payload = JSONObject().put("update", arr).toString()
-        // Use Woo batch API
-        val raw = execPath(base + "products/batch", "POST", payload)
-        ok += batch.size
-      } catch(e: Exception) { fail += batch.size }
-    }
-    ok to fail
-  }
-
   suspend fun setStatus(id: Long, s: String) = withContext(Dispatchers.IO) { exec("orders/$id", "PUT", "{\"status\":\"$s\"}") }
 
   suspend fun bulkTrack(ids: List<Long>, track: Boolean): Pair<Int,Int> = withContext(Dispatchers.IO) {
