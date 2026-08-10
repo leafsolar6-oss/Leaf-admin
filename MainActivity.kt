@@ -332,7 +332,7 @@ object Api {
     ok to fail
   }
 
-  suspend fun setStatus exec("orders/$id", "PUT", "{\"status\":\"$s\"}") }
+  suspend fun setStatus(id: Long, s: String) = withContext(Dispatchers.IO) { exec("orders/$id", "PUT", "{\"status\":\"$s\"}") }
 
   suspend fun bulkTrack(ids: List<Long>, track: Boolean): Pair<Int,Int> = withContext(Dispatchers.IO) {
     val payload = JSONObject().put("ids", JSONArray(ids)).put("track", track).toString()

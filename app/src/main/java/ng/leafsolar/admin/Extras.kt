@@ -31,8 +31,15 @@ fun StockInScreen(products: List<Product>, onAdjust: (Product, Int) -> Unit, onB
   var sku by remember { mutableStateOf("") }; var qty by remember { mutableStateOf("1") }
   var found by remember { mutableStateOf<Product?>(null) }; var msg by remember { mutableStateOf<String?>(null) }; var busy by remember { mutableStateOf(false) }
   fun search(s: String) { if (s.isBlank()) return; busy=true; msg=null; scope.launch(Dispatchers.IO){ val p=Api.findBySku(products,s); withContext(Dispatchers.Main){ found=p; busy=false; msg=if(p==null)"No product for \"$s\"" else null } } }
-  fun scan()=try{ val opts=com.google.mlkit.vision.barcode.common.Barcode.FORMAT_EAN_13 or com.google.mlkit.vision.barcode.common.Barcode.FORMAT_EAN_8 or com.google.mlkit.vision.barcode.common.Barcode.FORMAT_UPC_A or com.google.mlkit.vision.barcode.common.Barcode.FORMAT_CODE_128 or com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE
-    com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder().setBarcodeFormats(opts).enableAutoZoom().build().let{ com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(ctx,it).startScan().addOnSuccessListener{b->b.rawValue?.let{sku=it;search(it)}} } }catch(_:Exception){}
+  fun scan()=try{
+    val opts = com.google.mlkit.vision.barcode.common.Barcode.FORMAT_EAN_13 or
+      com.google.mlkit.vision.barcode.common.Barcode.FORMAT_EAN_8 or
+      com.google.mlkit.vision.barcode.common.Barcode.FORMAT_UPC_A or
+      com.google.mlkit.vision.barcode.common.Barcode.FORMAT_CODE_128 or
+      com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE
+    val b = com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder().setBarcodeFormats(opts).enableAutoZoom().build()
+    com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(ctx, b).startScan().addOnSuccessListener { r -> r.rawValue?.let { sku = it; search(it) } }
+  }catch(_:Exception){}
   Scaffold(topBar={Surface(color=GreenDark){Row(Modifier.fillMaxWidth().padding(8.dp),verticalAlignment=Alignment.CenterVertically){IconButton(onClick=onBack){Icon(Icons.Default.ArrowBack,null,tint=Color.White)};Text("Stock in (scan)",color=Color.White,fontWeight=FontWeight.ExtraBold,fontSize=17.sp)}}}){pad->
     Column(Modifier.padding(pad).padding(14.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
       OutlinedTextField(sku,{sku=it},label={Text("Scan or type SKU")},singleLine=true,modifier=Modifier.fillMaxWidth())
