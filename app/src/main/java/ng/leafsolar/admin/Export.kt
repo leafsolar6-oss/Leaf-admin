@@ -28,7 +28,7 @@ object Export {
   }
   private fun share(ctx: Context, f: File, mime: String) {
     val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", f)
-    val i = Intent(Intent.ACTION_SEND).apply { type = mime; putExtra(Intent.EXTRA_STREAM, uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERSISTABLE) }
+    val i = Intent(Intent.ACTION_SEND).apply { type = mime; putExtra(Intent.EXTRA_STREAM, uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     ctx.startActivity(Intent.createChooser(i, "Share CSV"))
   }
 }
