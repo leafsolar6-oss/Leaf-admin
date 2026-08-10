@@ -208,14 +208,18 @@ object Api {
     exec("products/$id", "PUT", o.toString())
   }
 
-  // One request to set status for many products
+  // One request to set status for many products (chunked to avoid timeouts on huge lists)
   suspend fun bulkStock(ids: List<Long>, status: String): Pair<Int, Int> = withContext(Dispatchers.IO) {
-    val payload = JSONObject().put("ids", JSONArray(ids)).put("status", status).toString()
-    val raw = execPath("https://leafsolar.ng/wp-json/lfx/v1/bulk-stock", "POST", payload)
-    return@withContext try {
-      val o = JSONObject(raw)
-      o.optInt("updated", 0) to o.optInt("failed", 0)
-    } catch (e: Exception) { 0 to ids.size }
+    var ok = 0; var fail = 0
+    ids.chunked(100).forEach { batch ->
+      try {
+        val payload = JSONObject().put("ids", JSONArray(batch)).put("status", status).toString()
+        val raw = execPath("https://leafsolar.ng/wp-json/lfx/v1/bulk-stock", "POST", payload)
+        val o = JSONObject(raw)
+        ok += o.optInt("updated", 0); fail += o.optInt("failed", 0)
+      } catch (e: Exception) { fail += batch.size }
+    }
+    ok to fail
   }
 
   suspend fun setStatus(id: Long, s: String) = withContext(Dispatchers.IO) { exec("orders/$id", "PUT", "{\"status\":\"$s\"}") }
