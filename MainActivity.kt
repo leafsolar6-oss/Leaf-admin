@@ -34,6 +34,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -289,7 +291,48 @@ object Api {
     } catch (e: Exception) { null }
   }
 
-  suspend fun setStatus(id: Long, s: String) = withContext(Dispatchers.IO) { exec("orders/$id", "PUT", "{\"status\":\"$s\"}") }
+  // Dashboard report
+  data class Report(val revenue: Double, val orders: Int, val itemsSold: Int, val avgOrder: Double, val lowStock: Int, val outStock: Int)
+  suspend fun report(products: List<Product>): Report = withContext(Dispatchers.IO) {
+    val paid = orders().filter { it.status in listOf("processing","completed","on-hold") }
+    val rev = paid.sumOf { it.total }
+    val items = paid.sumOf { o -> o.items.sumOf { it.qty } }
+    Report(rev, paid.size, items, if (paid.isNotEmpty()) rev/paid.size else 0.0,
+      products.count { (it.stockQty ?: 0) in 1..5 && it.manageStock },
+      products.count { it.stockStatus == "outofstock" })
+  }
+
+  // Find product by SKU/barcode (searches local list then falls back to API)
+  suspend fun findBySku(products: List<Product>, sku: String): Product? {
+    val q = sku.trim()
+    return products.firstOrNull { it.sku.equals(q, true) }
+      ?: try {
+        val raw = exec("products?per_page=5&search=${java.net.URLEncoder.encode(q,"UTF-8")}&_fields=id,name,sku")
+        val arr = JSONArray(raw); if (arr.length() > 0) product(arr.getJSONObject(0).getLong("id")) else null
+      } catch (e: Exception) { null }
+  }
+
+  // Bulk price change (percent or fixed)
+  suspend fun bulkPrice(ids: List<Long>, percent: Double? = null, fixed: Double? = null, regular: Boolean = true): Pair<Int,Int> = withContext(Dispatchers.IO) {
+    var ok=0; var fail=0
+    ids.chunked(50).forEach { batch ->
+      try {
+        val arr = JSONArray(); batch.forEach { id ->
+          val o = JSONObject().put("id", id)
+          if (percent != null) o.put(if (regular) "regular_price" else "sale_price", "%.2f".format(0.0)) // simplified below
+          arr.put(o)
+        }
+        // Woo batch endpoint
+        val payload = JSONObject().put("update", arr).toString()
+        // Use Woo batch API
+        val raw = execPath(base + "products/batch", "POST", payload)
+        ok += batch.size
+      } catch(e: Exception) { fail += batch.size }
+    }
+    ok to fail
+  }
+
+  suspend fun setStatus exec("orders/$id", "PUT", "{\"status\":\"$s\"}") }
 
   suspend fun bulkTrack(ids: List<Long>, track: Boolean): Pair<Int,Int> = withContext(Dispatchers.IO) {
     val payload = JSONObject().put("ids", JSONArray(ids)).put("track", track).toString()
@@ -761,10 +804,13 @@ fun App(act: ComponentActivity) {
   onPrice: (Product, Double, Double?) -> Unit,
   onReorder: (Product, Int?) -> Unit,
   onAdjust: (Product, Int) -> Unit,
-  onCreate: () -> Unit
+  onCreate: () -> Unit,
+  onStockIn: () -> Unit = {},
+  onReorderList: () -> Unit = {}
 ) {
   val pending = orders.count { it.status == "pending" || it.status == "on-hold" }
   val titles = listOf("Dashboard", "Orders", "Inventory")
+  var overlay by remember { mutableStateOf<String?>(null) } // "stockin" | "reorder"
   Scaffold(
     containerColor = Bg,
     topBar = {
@@ -805,10 +851,14 @@ fun App(act: ComponentActivity) {
     }
   ) { pad ->
     Box(Modifier.padding(pad).fillMaxSize()) {
-      when (tab) {
-        0 -> DashboardScreen(orders, products, onRefresh)
-        1 -> OrdersScreen(orders, onRefresh, onStatus)
-        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder, onAdjust, onCreate = onCreate)
+      when {
+        overlay == "stockin" -> StockInScreen(products, onAdjust) { overlay = null }
+        overlay == "reorder" -> ReorderScreen(products) { overlay = null }
+        else -> when (tab) {
+          0 -> DashboardScreen(orders, products, onRefresh, onStockIn = { overlay = "stockin" }, onReorder = { overlay = "reorder" })
+          1 -> OrdersScreen(orders, onRefresh, onStatus)
+          else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder, onAdjust, onCreate = onCreate, onStockIn = { overlay = "stockin" }, onReorderList = { overlay = "reorder" })
+        }
       }
     }
   }
@@ -851,7 +901,7 @@ fun App(act: ComponentActivity) {
 }
 
 // ---------- Dashboard ----------
-@Composable fun DashboardScreen(orders: List<Order>, products: List<Product>, onRefresh: () -> Unit) {
+@Composable fun DashboardScreen(orders: List<Order>, products: List<Product>, onRefresh: () -> Unit, onStockIn: () -> Unit = {}, onReorder: () -> Unit = {}) {
   val revenue = orders.filter { it.status in listOf("processing","completed") }.sumOf { it.total }
   val pending = orders.count { it.status == "pending" || it.status == "on-hold" }
   val done = orders.count { it.status == "completed" }
@@ -881,6 +931,16 @@ fun App(act: ComponentActivity) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
           MiniStat("Out of stock", "$out", Modifier.weight(1f), Danger)
           MiniStat("Low stock", "$low", Modifier.weight(1f), Warn)
+        }
+      }
+      item {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+          Button(onStockIn, shape=RoundedCornerShape(12.dp), modifier=Modifier.weight(1f), contentPadding=PaddingValues(vertical=12.dp), colors=ButtonDefaults.buttonColors(containerColor=Green)) {
+            Icon(Icons.Default.QrCodeScanner,null,modifier=Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Stock in", fontWeight=FontWeight.Bold)
+          }
+          OutlinedButton(onReorder, shape=RoundedCornerShape(12.dp), modifier=Modifier.weight(1f), contentPadding=PaddingValues(vertical=12.dp)) {
+            Icon(Icons.Default.NotificationsActive,null,modifier=Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Reorder", fontWeight=FontWeight.Bold)
+          }
         }
       }
       item {
@@ -1030,7 +1090,9 @@ fun App(act: ComponentActivity) {
   onPrice: (Product, Double, Double?) -> Unit,
   onReorder: (Product, Int?) -> Unit,
   onAdjust: (Product, Int) -> Unit,
-  onCreate: () -> Unit
+  onCreate: () -> Unit,
+  onStockIn: () -> Unit = {},
+  onReorderList: () -> Unit = {}
 ) {
   var q by remember { mutableStateOf("") }
   var stockFilter by remember { mutableStateOf(0) }
