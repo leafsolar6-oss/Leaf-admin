@@ -882,6 +882,7 @@ fun App(act: ComponentActivity) {
 
 // ---------- Dashboard ----------
 @Composable fun DashboardScreen(orders: List<Order>, products: List<Product>, onRefresh: () -> Unit, onStockIn: () -> Unit = {}, onReorder: () -> Unit = {}) {
+  val ctx = LocalContext.current
   val revenue = orders.filter { it.status in listOf("processing","completed") }.sumOf { it.total }
   val pending = orders.count { it.status == "pending" || it.status == "on-hold" }
   val done = orders.count { it.status == "completed" }
@@ -920,6 +921,18 @@ fun App(act: ComponentActivity) {
           }
           OutlinedButton(onReorder, shape=RoundedCornerShape(12.dp), modifier=Modifier.weight(1f), contentPadding=PaddingValues(vertical=12.dp)) {
             Icon(Icons.Default.NotificationsActive,null,modifier=Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Reorder", fontWeight=FontWeight.Bold)
+          }
+        }
+      }
+      item { RevenueChart(orders) }
+      item { OrdersStatusChart(orders) }
+      item {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+          OutlinedButton({ Export.productsCsv(ctx, products) }, shape=RoundedCornerShape(10.dp), modifier=Modifier.weight(1f), contentPadding=PaddingValues(vertical=8.dp)) {
+            Icon(Icons.Default.FileDownload,null,modifier=Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Products CSV", fontSize=11.sp, fontWeight=FontWeight.Bold)
+          }
+          OutlinedButton({ Export.ordersCsv(ctx, orders) }, shape=RoundedCornerShape(10.dp), modifier=Modifier.weight(1f), contentPadding=PaddingValues(vertical=8.dp)) {
+            Icon(Icons.Default.FileDownload,null,modifier=Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Orders CSV", fontSize=11.sp, fontWeight=FontWeight.Bold)
           }
         }
       }
