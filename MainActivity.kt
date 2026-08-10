@@ -296,8 +296,8 @@ object Api {
   suspend fun report(products: List<Product>): Report = withContext(Dispatchers.IO) {
     val paid = orders().filter { it.status in listOf("processing","completed","on-hold") }
     val rev = paid.sumOf { it.total }
-    val items = paid.sumOf { o -> o.items.sumOf { it.qty } }
-    Report(rev, paid.size, items, if (paid.isNotEmpty()) rev/paid.size else 0.0,
+    val itemsSold = paid.size
+    Report(rev, paid.size, itemsSold, if (paid.isNotEmpty()) rev/paid.size else 0.0,
       products.count { (it.stockQty ?: 0) in 1..5 && it.manageStock },
       products.count { it.stockStatus == "outofstock" })
   }
