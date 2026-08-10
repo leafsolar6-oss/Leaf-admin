@@ -687,7 +687,16 @@ fun App(act: ComponentActivity) {
       onBulkTrack = onBulkTrack,
       onPrice = onPrice,
       onReorder = onReorder,
-      onAdjust = onAdjust
+      onAdjust = onAdjust,
+      onCreate = { showAdd = true }
+    )
+    if (showAdd) AddProductDialog(
+      onDismiss = { showAdd = false },
+      onCreated = {
+        showAdd = false
+        toast = "Product created"
+        scope.launch { products.replaceAll(Api.products()) }
+      }
     )
   }
 }
@@ -748,7 +757,8 @@ fun App(act: ComponentActivity) {
   onBulkTrack: (List<Long>, Boolean) -> Unit,
   onPrice: (Product, Double, Double?) -> Unit,
   onReorder: (Product, Int?) -> Unit,
-  onAdjust: (Product, Int) -> Unit
+  onAdjust: (Product, Int) -> Unit,
+  onCreate: () -> Unit
 ) {
   val pending = orders.count { it.status == "pending" || it.status == "on-hold" }
   val titles = listOf("Dashboard", "Orders", "Inventory")
@@ -795,7 +805,7 @@ fun App(act: ComponentActivity) {
       when (tab) {
         0 -> DashboardScreen(orders, products, onRefresh)
         1 -> OrdersScreen(orders, onRefresh, onStatus)
-        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder, onAdjust, onCreate = { showAdd = true })
+        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder, onAdjust, onCreate = onCreate)
       }
     }
   }
