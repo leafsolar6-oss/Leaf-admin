@@ -445,6 +445,7 @@ object LocalCache {
 
 @Composable
 fun App(act: ComponentActivity) {
+  var showAdd by remember { mutableStateOf(false) }
   val prefs = act.getSharedPreferences("leaf-admin", 0)
   var user by remember { mutableStateOf<String?>(null) }
   var pass by remember { mutableStateOf<String?>(null) }
@@ -908,6 +909,7 @@ fun App(act: ComponentActivity) {
 @Composable fun OrdersScreen(orders: List<Order>, onRefresh: () -> Unit, onStatus: (Order, String) -> Unit) {
   var filter by remember { mutableStateOf("all") }
   val ctx = LocalContext.current
+  if (showAdd) AddProductDialog(onDismiss = { showAdd = false }, onCreated = { showAdd = false; toast = "Product created"; scope.launch { products.replaceAll(Api.products()) } })
   val filters = listOf("all" to "All", "pending" to "Pending", "processing" to "Processing", "completed" to "Done", "cancelled" to "Cancelled")
   val shown = remember(orders, filter) {
     when (filter) {
