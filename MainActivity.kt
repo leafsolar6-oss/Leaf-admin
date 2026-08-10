@@ -514,20 +514,24 @@ fun App(act: ComponentActivity) {
 
     val onBulkStock: (List<Long>, String) -> Unit = bulk@ { ids, status ->
       if (ids.isEmpty()) return@bulk
-      val target = ids.toHashSet()
-      for (i in products.indices) {
-        if (products[i].id in target) {
-          products[i] = products[i].copy(
-            stockStatus = status,
-            manageStock = true,
-            stockQty = if (status == "outofstock") 0 else (products[i].stockQty ?: 0).coerceAtLeast(1))
-        }
-      }
+      // Defer heavy list mutation to a coroutine to avoid ANR on large catalogs
       scope.launch {
-        // Single fast batch request instead of N calls
-        val (ok, fail) = Api.bulkStock(ids, status)
-        toast = if (fail == 0) "Marked $ok product${if (ok==1)"" else "s"} ${if (status=="outofstock") "out of stock" else "in stock"}"
-                else "Done ($ok ok, $fail failed)"
+        try {
+          val target = ids.toHashSet()
+          for (i in products.indices) {
+            if (products[i].id in target) {
+              products[i] = products[i].copy(
+                stockStatus = status,
+                manageStock = true,
+                stockQty = if (status == "outofstock") 0 else (products[i].stockQty ?: 0).coerceAtLeast(1))
+            }
+          }
+          val (ok, fail) = withContext(Dispatchers.IO) { Api.bulkStock(ids, status) }
+          toast = if (fail == 0) "Marked $ok product${if (ok==1)"" else "s"} ${if (status=="outofstock") "out of stock" else "in stock"}"
+                  else "Done ($ok ok, $fail failed)"
+        } catch (e: Exception) {
+          toast = "Bulk update failed: ${e.message ?: "network error"}"
+        }
       }
     }
 
