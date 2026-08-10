@@ -22,6 +22,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.heightIn
+import kotlinx.coroutines.Dispatchers
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -64,6 +66,8 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -220,6 +224,64 @@ object Api {
       } catch (e: Exception) { fail += batch.size }
     }
     ok to fail
+  }
+
+  data class Cat(val id: Long, val name: String)
+  suspend fun categories(): List<Cat> = withContext(Dispatchers.IO) {
+    try {
+      val raw = exec("products/categories?per_page=100&orderby=name&order=asc&_fields=id,name")
+      val arr = JSONArray(raw)
+      (0 until arr.length()).map { Cat(arr.getJSONObject(it).getLong("id"), arr.getJSONObject(it).getString("name")) }
+    } catch (e: Exception) { emptyList() }
+  }
+
+  /** Upload a local image file to the WP media library; returns the new attachment ID, or null. */
+  suspend fun uploadMedia(ctx: Context, uri: Uri): Long? = withContext(Dispatchers.IO) {
+    try {
+      val tmp = java.io.File(ctx.cacheDir, "upload_${System.currentTimeMillis()}.jpg")
+      ctx.contentResolver.openInputStream(uri)?.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } } ?: return@withContext null
+      val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+        .addFormDataPart("file", tmp.name, tmp.asRequestBody("image/jpeg".toMediaTypeOrNull()))
+        .build()
+      val req = Request.Builder().url("https://leafsolar.ng/wp-json/wp/v2/media")
+        .header("Authorization", auth)
+        .post(body).build()
+      client.newCall(req).execute().use { r ->
+        if (!r.isSuccessful) return@withContext null
+        val o = JSONObject(r.body?.string() ?: "")
+        tmp.delete()
+        o.optLong("id").takeIf { it > 0 }
+      }
+    } catch (e: Exception) { null }
+  }
+
+  data class NewProduct(
+    val name: String, val sku: String, val regular: String, val sale: String?,
+    val description: String, val categoryIds: List<Long>, val imageId: Long?, val stockQty: Int
+  )
+  /** Create a simple product; returns the new product ID or null. */
+  suspend fun createProduct(p: NewProduct): Long? = withContext(Dispatchers.IO) {
+    try {
+      val o = JSONObject()
+        .put("name", p.name)
+        .put("type", "simple")
+        .put("status", "publish")
+        .put("sku", p.sku)
+        .put("regular_price", p.regular)
+        .put("manage_stock", true)
+        .put("stock_quantity", p.stockQty)
+        .put("stock_status", if (p.stockQty > 0) "instock" else "outofstock")
+      if (!p.sale.isNullOrBlank()) o.put("sale_price", p.sale)
+      if (p.description.isNotBlank()) o.put("description", p.description)
+      if (p.categoryIds.isNotEmpty()) {
+        val carr = JSONArray(); p.categoryIds.forEach { carr.put(JSONObject().put("id", it)) }
+        o.put("categories", carr)
+      }
+      if (p.imageId != null) o.put("images", JSONArray().put(JSONObject().put("id", p.imageId)))
+      val raw = exec("products", "POST", o.toString())
+      val res = JSONObject(raw)
+      res.optLong("id").takeIf { it > 0 }
+    } catch (e: Exception) { null }
   }
 
   suspend fun setStatus(id: Long, s: String) = withContext(Dispatchers.IO) { exec("orders/$id", "PUT", "{\"status\":\"$s\"}") }
@@ -730,7 +792,7 @@ fun App(act: ComponentActivity) {
       when (tab) {
         0 -> DashboardScreen(orders, products, onRefresh)
         1 -> OrdersScreen(orders, onRefresh, onStatus)
-        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder, onAdjust)
+        else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder, onAdjust, onCreate = { showAdd = true })
       }
     }
   }
@@ -950,7 +1012,8 @@ fun App(act: ComponentActivity) {
   onBulkTrack: (List<Long>, Boolean) -> Unit,
   onPrice: (Product, Double, Double?) -> Unit,
   onReorder: (Product, Int?) -> Unit,
-  onAdjust: (Product, Int) -> Unit
+  onAdjust: (Product, Int) -> Unit,
+  onCreate: () -> Unit
 ) {
   var q by remember { mutableStateOf("") }
   var stockFilter by remember { mutableStateOf(0) }
@@ -1008,7 +1071,11 @@ fun App(act: ComponentActivity) {
       Spacer(Modifier.width(8.dp))
       Button({ scan() }, shape = RoundedCornerShape(12.dp),
         colors = ButtonDefaults.buttonColors(containerColor = Ink, contentColor = Color.White),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)) { Icon(Icons.Default.QrCodeScanner, "Scan") }
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp)) { Icon(Icons.Default.QrCodeScanner, "Scan") }
+      Spacer(Modifier.width(8.dp))
+      Button(onCreate, shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Color.White),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp)) { Icon(Icons.Default.Add, "Add product") }
     }
     Spacer(Modifier.height(8.dp))
     LazyRow(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1320,4 +1387,87 @@ fun shortCat(name: String): String = when (name) {
   "Commercial Packages" -> "Commercial"
   "Industrial Packages" -> "Industrial"
   else -> name
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddProductDialog(onDismiss: () -> Unit, onCreated: (Long) -> Unit) {
+  val ctx = LocalContext.current
+  val scope = rememberCoroutineScope()
+  var name by remember { mutableStateOf("") }
+  var sku by remember { mutableStateOf("") }
+  var regular by remember { mutableStateOf("") }
+  var sale by remember { mutableStateOf("") }
+  var desc by remember { mutableStateOf("") }
+  var stock by remember { mutableStateOf("0") }
+  var cats by remember { mutableStateOf<List<Api.Cat>>(emptyList()) }
+  var pickedCats by remember { mutableStateOf(setOf<Long>()) }
+  var catExp by remember { mutableStateOf(false) }
+  var imgUri by remember { mutableStateOf<Uri?>(null) }
+  var uploading by remember { mutableStateOf(false) }
+  var saving by remember { mutableStateOf(false) }
+  var err by remember { mutableStateOf<String?>(null) }
+  val pickImg = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { imgUri = it }
+
+  LaunchedEffect(Unit) { cats = withContext(Dispatchers.IO) { Api.categories() } }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    confirmButton = {
+      Button(enabled = !saving && name.isNotBlank(), onClick = {
+        scope.launch {
+          err = null; saving = true
+          var imgId: Long? = null
+          imgUri?.let {
+            uploading = true
+            imgId = withContext(Dispatchers.IO) { Api.uploadMedia(ctx, it) }
+            uploading = false
+            if (imgId == null) { err = "Image upload failed"; saving = false; return@launch }
+          }
+          val np = Api.NewProduct(name, sku, regular, sale.ifBlank { null }, desc, pickedCats.toList(), imgId, stock.toIntOrNull() ?: 0)
+          val id = withContext(Dispatchers.IO) { Api.createProduct(np) }
+          saving = false
+          if (id != null) onCreated(id) else err = "Could not create product"
+        }
+      }) { Text(if (saving) "SAVING..." else "CREATE PRODUCT") }
+    },
+    dismissButton = { TextButton(onDismiss) { Text("CANCEL") } },
+    title = { Text("Add new product", fontWeight = FontWeight.ExtraBold) },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
+        err?.let { Surface(color = Color(0xFFFDECEA), shape = RoundedCornerShape(8.dp)) { Text(it, color = Danger, fontSize = 11.sp, modifier = Modifier.padding(8.dp)) } }
+        OutlinedTextField(name, { name = it }, label = { Text("Product name *") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(sku, { sku = it }, label = { Text("SKU") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          OutlinedTextField(regular, { regular = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Regular price (₦)") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
+          OutlinedTextField(sale, { sale = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Sale price") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
+        }
+        OutlinedTextField(stock, { stock = it.filter { c -> c.isDigit() } }, label = { Text("Stock quantity") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(desc, { desc = it }, label = { Text("Description") }, minLines = 2, maxLines = 4, modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp))
+        // Categories
+        ExposedDropdownMenuBox(expanded = catExp, onExpandedChange = { catExp = it }) {
+          OutlinedTextField(
+            value = if (pickedCats.isEmpty()) "Select categories" else cats.filter { it.id in pickedCats }.joinToString { it.name },
+            onValueChange = {}, readOnly = true, label = { Text("Categories") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = catExp) },
+            modifier = Modifier.menuAnchor().fillMaxWidth())
+          ExposedDropdownMenu(expanded = catExp, onDismissRequest = { catExp = false }) {
+            cats.forEach { c ->
+              DropdownMenuItem(text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  Checkbox(checked = c.id in pickedCats, onCheckedChange = { pickedCats = if (it) pickedCats + c.id else pickedCats - c.id })
+                  Text(c.name)
+                }
+              }, onClick = { pickedCats = if (c.id in pickedCats) pickedCats - c.id else pickedCats + c.id })
+            }
+          }
+        }
+        // Image
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          Button({ pickImg.launch("image/*") }, shape = RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) { Icon(Icons.Default.AddAPhoto, null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("Add photo", fontSize = 12.sp) }
+          if (uploading) CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+          imgUri?.let { Text("Image selected", color = Green, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+        }
+      }
+    })
 }
