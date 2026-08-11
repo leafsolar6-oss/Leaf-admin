@@ -515,7 +515,7 @@ fun App(act: ComponentActivity) {
         orders.replaceAll(o); products.replaceAll(p)
         LocalCache.saveOrders(ctx, o); LocalCache.saveProducts(ctx, p)
         lastSync = System.currentTimeMillis()
-      } catch (e: Exception) { toast = { val m = e.message ?: ""; "Couldn't refresh: " + if (m.contains("Unable to resolve host", true) || m.contains("UnknownHost", true)) "No internet connection" else m } }
+      } catch (e: Exception) { run { val m = e.message ?: ""; toast = "Couldn't refresh: " + if (m.contains("Unable to resolve host", true) || m.contains("UnknownHost", true)) "No internet connection" else m } }
       refreshing = false; after()
     }
   }
@@ -557,7 +557,7 @@ fun App(act: ComponentActivity) {
           orders.replaceAll(o); products.replaceAll(p)
           LocalCache.saveOrders(ctx, o); LocalCache.saveProducts(ctx, p)
           lastSync = System.currentTimeMillis()
-        } catch (e: Exception) { toast = { val m = e.message ?: ""; "Couldn't refresh: " + if (m.contains("Unable to resolve host", true) || m.contains("UnknownHost", true)) "No internet connection" else m } }
+        } catch (e: Exception) { run { val m = e.message ?: ""; toast = "Couldn't refresh: " + if (m.contains("Unable to resolve host", true) || m.contains("UnknownHost", true)) "No internet connection" else m } }
       }
     }
   }
@@ -801,7 +801,7 @@ fun App(act: ComponentActivity) {
   onCreate: () -> Unit,
   onStockIn: () -> Unit = {},
   onReorderList: () -> Unit = {},
-  refreshing: Boolean = false
+  isRefreshing: Boolean = false
 ) {
   val pending = orders.count { it.status == "pending" || it.status == "on-hold" }
   val titles = listOf("Dashboard", "Orders", "Inventory")
@@ -852,7 +852,7 @@ fun App(act: ComponentActivity) {
         else -> when (tab) {
           0 -> DashboardScreen(orders, products, onRefresh, onStockIn = { overlay = "stockin" }, onReorder = { overlay = "reorder" })
           1 -> OrdersScreen(orders, onRefresh, onStatus)
-          else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder, onAdjust, onCreate = onCreate, onStockIn = { overlay = "stockin" }, onReorderList = { overlay = "reorder" }, refreshing = refreshing)
+          else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder, onAdjust, onCreate = onCreate, onStockIn = { overlay = "stockin" }, onReorderList = { overlay = "reorder" }, isRefreshing = refreshing)
         }
       }
     }
@@ -1101,7 +1101,7 @@ fun App(act: ComponentActivity) {
   onCreate: () -> Unit,
   onStockIn: () -> Unit = {},
   onReorderList: () -> Unit = {},
-  refreshing: Boolean = false
+  isRefreshing: Boolean = false
 ) {
   var q by remember { mutableStateOf("") }
   var stockFilter by remember { mutableStateOf(0) }
@@ -1112,6 +1112,7 @@ fun App(act: ComponentActivity) {
   fun toggleSel(id: Long) { if (id in selected) selected.remove(id) else selected.add(id) }
   fun selIds(): List<Long> = selected.toList()
   val ctx = LocalContext.current
+  val scope = rememberCoroutineScope()
   var allCats by remember { mutableStateOf<List<Api.Cat>>(emptyList()) }
   LaunchedEffect(Unit) { scope.launch(Dispatchers.IO) { allCats = Api.categories() } }
   var editTarget by remember { mutableStateOf<Product?>(null) }
@@ -1254,7 +1255,7 @@ fun App(act: ComponentActivity) {
       }
     }
     }
-    PullRefresh(refreshing, onRefresh) {
+    PullRefresh(isRefreshing, onRefresh) {
       if (shown.isEmpty()) EmptyState("No products match")
       else LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         items(shown, key = { it.id }) { ProductRow(it, onUpdate, onPrice, onReorder, onAdjust, selectMode, it.id in selected, ::toggleSel, allCats) { editTarget = it } }
