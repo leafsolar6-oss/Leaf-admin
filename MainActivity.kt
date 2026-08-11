@@ -292,14 +292,17 @@ object Api {
   }
 
   /** Update an existing product's name and/or categories. */
-  suspend fun editProduct(id: Long, name: String? = null, categoryIds: List<Long>? = null): Boolean = withContext(Dispatchers.IO) {
+  suspend fun editProduct(id: Long, name: String? = null, sku: String? = null, description: String? = null, categoryIds: List<Long>? = null, imageId: Long? = null): Boolean = withContext(Dispatchers.IO) {
     try {
       val o = JSONObject()
       if (!name.isNullOrBlank()) o.put("name", name)
+      if (sku != null) o.put("sku", sku)
+      if (description != null) o.put("description", description)
       if (categoryIds != null) {
         val carr = JSONArray(); categoryIds.forEach { carr.put(JSONObject().put("id", it)) }
         o.put("categories", carr)
       }
+      if (imageId != null) o.put("images", JSONArray().put(JSONObject().put("id", imageId)))
       exec("products/$id", "PUT", o.toString())
       true
     } catch (e: Exception) { false }
@@ -1119,9 +1122,9 @@ fun App(act: ComponentActivity) {
   if (editTarget != null) {
     EditProductDialog(editTarget!!, allCats,
       onDismiss = { editTarget = null },
-      onSaved = { id, newName, catIds ->
+      onSaved = {
         editTarget = null
-        scope.launch(Dispatchers.IO) { Api.product(id)?.let { p -> onUpdate(p, null, null, null) } }
+        scope.launch(Dispatchers.IO) { Api.product(editTarget?.id ?: -1)?.let { p -> onUpdate(p, null, null, null) } }
       })
   }
   val categories = remember(products) {
@@ -1578,27 +1581,40 @@ fun AddProductDialog(onDismiss: () -> Unit, onCreated: (Long) -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun EditProductDialog(p: Product, categories: List<Api.Cat>, onDismiss: () -> Unit, onSaved: (Long, String, List<Long>) -> Unit) {
+fun EditProductDialog(p: Product, categories: List<Api.Cat>, onDismiss: () -> Unit, onSaved: () -> Unit) {
+  val ctx = LocalContext.current
   var name by remember(p.id) { mutableStateOf(p.name) }
+  var sku by remember(p.id) { mutableStateOf(p.sku) }
+  var desc by remember(p.id) { mutableStateOf("") }
   val selected = remember { mutableStateListOf<Long>() }
-  LaunchedEffect(p.id) {
-    selected.clear()
-    // match product category names to ids
-    categories.filter { it.name in p.categories }.forEach { selected.add(it.id) }
-  }
+  var imageUri by remember { mutableStateOf<android.net.Uri?>(null) }
   var saving by remember { mutableStateOf(false) }
   var err by remember { mutableStateOf<String?>(null) }
   val scope = rememberCoroutineScope()
+  val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { imageUri = it }
+  LaunchedEffect(p.id) {
+    selected.clear()
+    categories.filter { it.name in p.categories }.forEach { selected.add(it.id) }
+    scope.launch(Dispatchers.IO) {
+      try {
+        val raw = Api.execPath("https://leafsolar.ng/wp-json/wc/v3/products/${p.id}?_fields=description", "GET", null)
+        val d = JSONObject(raw).optString("description", "")
+        withContext(Dispatchers.Main) { desc = android.text.Html.fromHtml(d, android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim() }
+      } catch (_: Exception) {}
+    }
+  }
   AlertDialog(
     onDismissRequest = onDismiss,
     confirmButton = {
       Button(enabled = !saving && name.isNotBlank(), onClick = {
         saving = true; err = null
         scope.launch(Dispatchers.IO) {
-          val ok = Api.editProduct(p.id, name, selected)
+          var imgId: Long? = null
+          if (imageUri != null) imgId = Api.uploadMedia(ctx, imageUri!!)
+          val ok = Api.editProduct(p.id, name, sku, desc.ifBlank { null }, selected, imgId)
           withContext(Dispatchers.Main) {
             saving = false
-            if (ok) onSaved(p.id, name, selected) else err = "Could not save"
+            if (ok) onSaved() else err = "Could not save"
           }
         }
       }) { Text(if (saving) "SAVING…" else "SAVE") }
@@ -1606,14 +1622,24 @@ fun EditProductDialog(p: Product, categories: List<Api.Cat>, onDismiss: () -> Un
     dismissButton = { TextButton(onDismiss) { Text("CANCEL") } },
     title = { Text("Edit product", fontWeight = FontWeight.ExtraBold) },
     text = {
-      Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
-        OutlinedTextField(name, { name = it }, label = { Text("Product name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+        OutlinedTextField(name, { name = it }, label = { Text("Product name *") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(sku, { sku = it }, label = { Text("SKU") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(desc, { desc = it }, label = { Text("Description") }, minLines = 2, maxLines = 4, modifier = Modifier.fillMaxWidth().heightIn(min = 70.dp))
+        // Image
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+          if (p.image.isNotBlank()) AsyncImage(model = imageUri ?: p.image, contentDescription = p.name, modifier = Modifier.size(54.dp).clip(RoundedCornerShape(10.dp)).background(Color(0xFFF1F4F2)))
+          else if (imageUri != null) AsyncImage(model = imageUri, contentDescription = "New", modifier = Modifier.size(54.dp).clip(RoundedCornerShape(10.dp)))
+          OutlinedButton({ pickImage.launch("image/*") }, shape = RoundedCornerShape(10.dp)) {
+            Icon(Icons.Default.AddAPhoto, null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text(if (imageUri != null) "Change image" else "Add image", fontSize = 12.sp)
+          }
+        }
         Text("Categories", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = InkMuted)
         categories.forEach { c ->
           val checked = c.id in selected
           Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable {
             if (checked) selected.remove(c.id) else selected.add(c.id)
-          }.padding(vertical = 2.dp)) {
+          }.padding(vertical = 1.dp)) {
             Checkbox(checked = checked, onCheckedChange = { if (it) selected.add(c.id) else selected.remove(c.id) }, colors = CheckboxDefaults.colors(checkedColor = Green))
             Text(c.name, fontSize = 13.sp)
           }
