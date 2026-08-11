@@ -199,7 +199,7 @@ object Api {
   }
 
   // Low-level call that accepts a full URL
-  private fun execPath(url: String, method: String = "GET", bodyJson: String? = null): String {
+  fun execPath(url: String, method: String = "GET", bodyJson: String? = null): String {
     val b = Request.Builder().url(url).header("Authorization", auth)
     if (bodyJson != null) b.method(method, bodyJson.toRequestBody("application/json".toMediaTypeOrNull()!!))
     else b.method(method, null)
