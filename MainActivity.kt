@@ -291,6 +291,20 @@ object Api {
     } catch (e: Exception) { null }
   }
 
+  /** Update an existing product's name and/or categories. */
+  suspend fun editProduct(id: Long, name: String? = null, categoryIds: List<Long>? = null): Boolean = withContext(Dispatchers.IO) {
+    try {
+      val o = JSONObject()
+      if (!name.isNullOrBlank()) o.put("name", name)
+      if (categoryIds != null) {
+        val carr = JSONArray(); categoryIds.forEach { carr.put(JSONObject().put("id", it)) }
+        o.put("categories", carr)
+      }
+      exec("products/$id", "PUT", o.toString())
+      true
+    } catch (e: Exception) { false }
+  }
+
   // Dashboard report
   data class Report(val revenue: Double, val orders: Int, val itemsSold: Int, val avgOrder: Double, val lowStock: Int, val outStock: Int)
   suspend fun report(products: List<Product>): Report = withContext(Dispatchers.IO) {
@@ -501,7 +515,7 @@ fun App(act: ComponentActivity) {
         orders.replaceAll(o); products.replaceAll(p)
         LocalCache.saveOrders(ctx, o); LocalCache.saveProducts(ctx, p)
         lastSync = System.currentTimeMillis()
-      } catch (e: Exception) { toast = "Couldn't refresh: ${e.message}" }
+      } catch (e: Exception) { toast = { val m = e.message ?: ""; "Couldn't refresh: " + if (m.contains("Unable to resolve host", true) || m.contains("UnknownHost", true)) "No internet connection" else m } }
       refreshing = false; after()
     }
   }
@@ -543,7 +557,7 @@ fun App(act: ComponentActivity) {
           orders.replaceAll(o); products.replaceAll(p)
           LocalCache.saveOrders(ctx, o); LocalCache.saveProducts(ctx, p)
           lastSync = System.currentTimeMillis()
-        } catch (e: Exception) { toast = "Couldn't refresh: ${e.message}" }
+        } catch (e: Exception) { toast = { val m = e.message ?: ""; "Couldn't refresh: " + if (m.contains("Unable to resolve host", true) || m.contains("UnknownHost", true)) "No internet connection" else m } }
       }
     }
   }
@@ -786,7 +800,8 @@ fun App(act: ComponentActivity) {
   onAdjust: (Product, Int) -> Unit,
   onCreate: () -> Unit,
   onStockIn: () -> Unit = {},
-  onReorderList: () -> Unit = {}
+  onReorderList: () -> Unit = {},
+  refreshing: Boolean = false
 ) {
   val pending = orders.count { it.status == "pending" || it.status == "on-hold" }
   val titles = listOf("Dashboard", "Orders", "Inventory")
@@ -837,7 +852,7 @@ fun App(act: ComponentActivity) {
         else -> when (tab) {
           0 -> DashboardScreen(orders, products, onRefresh, onStockIn = { overlay = "stockin" }, onReorder = { overlay = "reorder" })
           1 -> OrdersScreen(orders, onRefresh, onStatus)
-          else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder, onAdjust, onCreate = onCreate, onStockIn = { overlay = "stockin" }, onReorderList = { overlay = "reorder" })
+          else -> InventoryScreen(products, onRefresh, onUpdate, onBulkStock, onBulkTrack, onPrice, onReorder, onAdjust, onCreate = onCreate, onStockIn = { overlay = "stockin" }, onReorderList = { overlay = "reorder" }, refreshing = refreshing)
         }
       }
     }
@@ -1085,7 +1100,8 @@ fun App(act: ComponentActivity) {
   onAdjust: (Product, Int) -> Unit,
   onCreate: () -> Unit,
   onStockIn: () -> Unit = {},
-  onReorderList: () -> Unit = {}
+  onReorderList: () -> Unit = {},
+  refreshing: Boolean = false
 ) {
   var q by remember { mutableStateOf("") }
   var stockFilter by remember { mutableStateOf(0) }
@@ -1096,6 +1112,17 @@ fun App(act: ComponentActivity) {
   fun toggleSel(id: Long) { if (id in selected) selected.remove(id) else selected.add(id) }
   fun selIds(): List<Long> = selected.toList()
   val ctx = LocalContext.current
+  var allCats by remember { mutableStateOf<List<Api.Cat>>(emptyList()) }
+  LaunchedEffect(Unit) { scope.launch(Dispatchers.IO) { allCats = Api.categories() } }
+  var editTarget by remember { mutableStateOf<Product?>(null) }
+  if (editTarget != null) {
+    EditProductDialog(editTarget!!, allCats,
+      onDismiss = { editTarget = null },
+      onSaved = { id, newName, catIds ->
+        editTarget = null
+        scope.launch(Dispatchers.IO) { Api.product(id)?.let { p -> onUpdate(p, null, null, null) } }
+      })
+  }
   val categories = remember(products) {
     val c = LinkedHashMap<String, Int>()
     products.forEach { p -> if (p.categories.isEmpty()) c["Uncategorized"] = (c["Uncategorized"] ?: 0)+1 else p.categories.forEach { n -> c[n] = (c[n] ?: 0)+1 } }
@@ -1227,10 +1254,10 @@ fun App(act: ComponentActivity) {
       }
     }
     }
-    PullRefresh(false, onRefresh) {
+    PullRefresh(refreshing, onRefresh) {
       if (shown.isEmpty()) EmptyState("No products match")
       else LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(shown, key = { it.id }) { ProductRow(it, onUpdate, onPrice, onReorder, onAdjust, selectMode, it.id in selected, ::toggleSel) }
+        items(shown, key = { it.id }) { ProductRow(it, onUpdate, onPrice, onReorder, onAdjust, selectMode, it.id in selected, ::toggleSel, allCats) { editTarget = it } }
         item { Spacer(Modifier.height(60.dp)) }
       }
     }
@@ -1240,7 +1267,8 @@ fun App(act: ComponentActivity) {
 @Composable fun ProductRow(
   p: Product, onUpdate: (Product, Int?, Boolean?, String?) -> Unit, onPrice: (Product, Double, Double?) -> Unit,
   onReorder: (Product, Int?) -> Unit, onAdjust: (Product, Int) -> Unit,
-  selectMode: Boolean = false, selected: Boolean = false, onToggle: (Long) -> Unit = {}
+  selectMode: Boolean = false, selected: Boolean = false, onToggle: (Long) -> Unit = {},
+  categories: List<Api.Cat> = emptyList(), onEdit: (Product)->Unit = {}
 ) {
   var reorderDlg by remember(p.id) { mutableStateOf(false) }
   if (reorderDlg) ReorderDialog(p, onDismiss = { reorderDlg = false }, onSave = { pt -> onReorder(p, pt); reorderDlg = false })
@@ -1293,6 +1321,9 @@ fun App(act: ComponentActivity) {
           Text(money(p.price), fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Green)
           IconButton(onClick = { priceDlg = true }, modifier = Modifier.size(28.dp)) {
             Icon(Icons.Default.Edit, "Edit price", tint = InkMuted, modifier = Modifier.size(16.dp))
+          }
+          IconButton(onClick = { onEdit(p) }, modifier = Modifier.size(28.dp)) {
+            Icon(Icons.Default.EditNote, "Edit product", tint = Green, modifier = Modifier.size(17.dp))
           }
           IconButton(onClick = { reorderDlg = true }, modifier = Modifier.size(28.dp)) {
             Icon(Icons.Default.NotificationsActive, "Reorder point", tint = if (p.reorderPoint != null && (p.stockQty ?: 0) < p.reorderPoint) Warn else InkMuted, modifier = Modifier.size(16.dp))
@@ -1542,4 +1573,52 @@ fun AddProductDialog(onDismiss: () -> Unit, onCreated: (Long) -> Unit) {
         }
       }
     })
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditProductDialog(p: Product, categories: List<Api.Cat>, onDismiss: () -> Unit, onSaved: (Long, String, List<Long>) -> Unit) {
+  var name by remember(p.id) { mutableStateOf(p.name) }
+  val selected = remember { mutableStateListOf<Long>() }
+  LaunchedEffect(p.id) {
+    selected.clear()
+    // match product category names to ids
+    categories.filter { it.name in p.categories }.forEach { selected.add(it.id) }
+  }
+  var saving by remember { mutableStateOf(false) }
+  var err by remember { mutableStateOf<String?>(null) }
+  val scope = rememberCoroutineScope()
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    confirmButton = {
+      Button(enabled = !saving && name.isNotBlank(), onClick = {
+        saving = true; err = null
+        scope.launch(Dispatchers.IO) {
+          val ok = Api.editProduct(p.id, name, selected)
+          withContext(Dispatchers.Main) {
+            saving = false
+            if (ok) onSaved(p.id, name, selected) else err = "Could not save"
+          }
+        }
+      }) { Text(if (saving) "SAVING…" else "SAVE") }
+    },
+    dismissButton = { TextButton(onDismiss) { Text("CANCEL") } },
+    title = { Text("Edit product", fontWeight = FontWeight.ExtraBold) },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+        OutlinedTextField(name, { name = it }, label = { Text("Product name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Text("Categories", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = InkMuted)
+        categories.forEach { c ->
+          val checked = c.id in selected
+          Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable {
+            if (checked) selected.remove(c.id) else selected.add(c.id)
+          }.padding(vertical = 2.dp)) {
+            Checkbox(checked = checked, onCheckedChange = { if (it) selected.add(c.id) else selected.remove(c.id) }, colors = CheckboxDefaults.colors(checkedColor = Green))
+            Text(c.name, fontSize = 13.sp)
+          }
+        }
+        err?.let { Surface(color = DangerBg, shape = RoundedCornerShape(8.dp)) { Text(it, color = Danger, fontSize = 11.sp, modifier = Modifier.padding(8.dp)) } }
+      }
+    }
+  )
 }
